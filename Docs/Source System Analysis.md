@@ -1,5 +1,4 @@
 # Source System Analysis 
-
 ## AdventureWorks2025 OLTP
 
 ---
