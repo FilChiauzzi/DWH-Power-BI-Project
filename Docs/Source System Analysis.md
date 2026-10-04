@@ -100,7 +100,7 @@ Both approaches are supported:
 ### 3.2 Data Scope & Historical Requirements
 AdventureWorks contains multi‑year historical data:
 
-* Sales: 5–7 years
+* Sales: 3 years
 * Production: historical BOM and work orders
 * HR: employee history
 * Inventory: stock movements
