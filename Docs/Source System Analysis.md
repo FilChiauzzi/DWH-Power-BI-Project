@@ -1,5 +1,5 @@
 # Source System Analysis 
-## AdventureWorks2025 OLTP
+# AdventureWorks2025 OLTP
 
 ---
 ## 1 Business Context & Ownership
