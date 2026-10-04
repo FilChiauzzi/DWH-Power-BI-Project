@@ -4,66 +4,66 @@
 ## 1 Business Context & Ownership
 ### 1.1 Who own is the data?
 
-AdventureWorks2025 OLTP is owned and maintained by the IT Operations Department.
+AdventureWorks2025 OLTP is owned and maintained by the **IT Operations Department**.
 Functional ownership is distributed across business domains:
-* Sales & Marketing – customers, orders, territories
-* Manufacturing – products, BOM, work orders
-* Finance – pricing, costs, transactions
-* Human Resources – employees, departments
+* **Sales & Marketing** – customers, orders, territories
+* **Manufacturing** – products, BOM, work orders
+* **Finance** – pricing, costs, transactions
+* **Human Resources** – employees, departments
 
 ### 1.2 Supported Business Processes
 The source system supports the following core business processes:
 
-* Order Management
-* Customer Relationship Management
-* Product & Variant Management
-* Production Planning (MRP)
-* Inventory & Warehouse Management
-* Employee Management
-* Pricing & Promotions
+* **Order** Management
+* **Customer** Relationship Management
+* **Product** & Variant Management
+* **Production** Planning (MRP)
+* **Inventory** & **Warehouse** Management
+* **Employee** Management
+* **Pricing** & **Promotions**
 
 ### 1.3 System & Data Documentation
-This section summarizes all technical and functional documentation provided directly by the AdventureWorks IT and Business departments.
-The documentation describes the source system architecture, database structure, business processes, data definitions, and integration mechanisms used by the organization.
+This section summarizes all **technical** and **functional** documentation provided directly by the **AdventureWorks IT** and **Business departments**.
+The documentation describes the source system **architecture, database structure, business processes, data definitions, and integration mechanisms** used by the organization.
 
 #### 1.3.1 Technical Documentation Provided by IT Operations
-The IT Operations team supplied a complete set of internal technical documents describing how the AdventureWorks2025 OLTP system is built and maintained.
+The IT Operations team supplied a complete set of internal technical documents describing how the AdventureWorks2025 OLTP system is **built** and **maintained**.
 
 ##### 1.3.1.1 System Architecture Documentation
 The following internal documents were provided:
 
-* High‑level architecture diagrams of the OLTP system
-* Server and infrastructure topology (SQL Server instances, VM layout, storage configuration)
-* Network access requirements (VPN, firewall rules, IP whitelisting)
-* Authentication and authorization model
+* High‑level architecture **diagrams** of the OLTP system
+* Server and infrastructure topology (**SQL Server instances, VM layout, storage configuration**)
+* Network access requirements (**VPN**, firewall rules, IP whitelisting)
+* **Authentication** and **authorization** model
 * Backup, recovery, and maintenance procedures
 * Performance guidelines and operational constraints
 
 ##### 1.3.1.2 Database Schema & Metadata
 IT shared detailed documentation describing the database structure:
 
-* Full ER diagrams of the OLTP database
-* Table‑level schema documentation
-* Column‑level metadata (datatype, nullability, constraints)
-* Primary and foreign key relationships
+* Full **ER diagrams**of the OLTP database
+* Table‑level **schema documentation**
+* Column‑level **metadata** (datatype, nullability, constraints)
+* Primary and foreign **key** relationships
 * Indexing strategy and performance notes
-* Stored procedure
+* **Stored procedure**
 
 ##### 1.3.1.3 Integration Interfaces
 The integration team provided documentation covering:
 
 * Existing data extraction processes
 * File exchange formats (CSV, XML, JSON)
-* API specifications (if applicable)
-* Incremental load logic (ModifiedDate, CDC, triggers)
+* **API specifications** (if applicable)
+* **Incremental load logic** (ModifiedDate, CDC, triggers)
 * Security protocols (service accounts, tokens, SSH keys)
 * Scheduling and operational SLAs
 
 #### 1.3.2 Functional Documentation Provided by Business Departments
-Business stakeholders supplied functional documentation describing how data is used across the organization.
+Business stakeholders supplied **functional documentation** describing how data is used across the organization.
 
 ##### 1.3.2.1 Business Glossary
-A complete glossary defining key business concepts, including:
+A complete **glossary** defining key business concepts, including:
 
 * Customer, Store, Territory
 * Sales Order, Quote, Invoice
