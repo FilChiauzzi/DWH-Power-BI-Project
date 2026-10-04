@@ -23,16 +23,83 @@ The source system supports the following core business processes:
 * Pricing & Promotions
 
 ### 1.3 System & Data Documentation
-Official Microsoft documentation is available and referenced for schema, metadata, and table definitions:
+This section summarizes all technical and functional documentation provided directly by the AdventureWorks IT and Business departments.
+The documentation describes the source system architecture, database structure, business processes, data definitions, and integration mechanisms used by the organization.
 
-AdventureWorks installation & schema
-https://learn.microsoft.com/sql/samples/adventureworks-install-configure (learn.microsoft.com in Bing)
+#### 1.3.1 Technical Documentation Provided by IT Operations
+The IT Operations team supplied a complete set of internal technical documents describing how the AdventureWorks2025 OLTP system is built and maintained.
 
-AdventureWorks2022/2025 OLTP documentation
-https://learn.microsoft.com/sql/samples/adventureworks2022 (learn.microsoft.com in Bing)
+##### 1.3.1.1 System Architecture Documentation
+The following internal documents were provided:
 
-OLTP + DW conceptual diagrams
-https://learn.microsoft.com/sql/samples/adventureworks2022-oltp-data-warehouse (learn.microsoft.com in Bing)
+* High‑level architecture diagrams of the OLTP system
+* Server and infrastructure topology (SQL Server instances, VM layout, storage configuration)
+* Network access requirements (VPN, firewall rules, IP whitelisting)
+* Authentication and authorization model
+* Backup, recovery, and maintenance procedures
+* Performance guidelines and operational constraints
+
+##### 1.3.1.2 Database Schema & Metadata
+IT shared detailed documentation describing the database structure:
+
+* Full ER diagrams of the OLTP database
+* Table‑level schema documentation
+* Column‑level metadata (datatype, nullability, constraints)
+* Primary and foreign key relationships
+* Indexing strategy and performance notes
+* Stored procedure
+
+##### 1.3.1.3 Integration Interfaces
+The integration team provided documentation covering:
+
+* Existing data extraction processes
+* File exchange formats (CSV, XML, JSON)
+* API specifications (if applicable)
+* Incremental load logic (ModifiedDate, CDC, triggers)
+* Security protocols (service accounts, tokens, SSH keys)
+* Scheduling and operational SLAs
+
+#### 1.3.2 Functional Documentation Provided by Business Departments
+Business stakeholders supplied functional documentation describing how data is used across the organization.
+
+##### 1.3.2.1 Business Glossary
+A complete glossary defining key business concepts, including:
+
+* Customer, Store, Territory
+* Sales Order, Quote, Invoice
+* Product, Variant, BOM
+* Work Order, Production Cycle
+* Employee, Department, Role
+* Financial metrics (Revenue, Margin, Cost of Goods Sold)
+
+##### 1.3.2.2 Business Process Documentation
+Detailed descriptions of the processes supported by the OLTP system:
+
+* Order‑to‑Cash
+* Procure‑to‑Pay
+* Production Planning (MRP)
+* Inventory Management
+* Customer Management
+* Employee Lifecycle Management
+* Pricing & Promotions
+
+##### 1.3.2.3 Data Ownership & Stewardship
+Each department identified data owners and stewards:
+
+* Sales → Customer, Order, Territory
+* Manufacturing → Product, BOM, Work Orders
+* Finance → Pricing, Costs, Transactions
+* HR → Employee, Department
+
+These stakeholders are responsible for business rules, data quality, and approval of changes.
+
+##### 1.3.2.4 Data Quality Rules
+Business teams provided:
+
+* Validation rules
+* Known data issues
+* Exception handling procedures
+* KPI definitions and calculation logic
 
 ### 1.4 Data Model & Data Catalog
 AdventureWorks is a relational SQL Server database organized into functional schemas:
@@ -107,9 +174,8 @@ AdventureWorks contains multi‑year historical data:
 
 ### 3.3 Expected Extract Size
 Approximate record counts:
-* SalesOrderHeader: ~31,000
 * SalesOrderDetail: ~121,000
-* Product: ~500
+* Product: ~504
 * Customer: ~20,000
 
 These volumes are manageable for daily ingestion.
