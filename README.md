@@ -13,6 +13,7 @@ The goal of this project is to demostrate a comprehenisive data warehousing and 
 **Building the Data Warehouse (Data Engineering)**
 
 **Objective**
+
 Develop a modern Data warehouse using SQL Server and SISS for the etl orchestration, to consolidate sales and orders data, enalbling analytical reporting and informed decision-making.
 
 **Specifications**
@@ -26,6 +27,7 @@ Develop a modern Data warehouse using SQL Server and SISS for the etl orchestrat
 **BI: Analytics & Reporting (Data Analysis)**
 
 **Objective**
+
 Develop SQL-based analytics to deliver detail insight into:
 
   * **Customers Behavior**
