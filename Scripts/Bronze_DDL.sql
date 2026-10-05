@@ -1,3 +1,16 @@
+/*
+=========================================================
+Bronze Layer – Table Definitions
+=========================================================
+Purpose:
+    This script creates raw table structures for the Bronze
+    layer of the data platform.
+
+Warning:
+    Running this script will DROP existing tables and recreate
+    them. All data in these tables will be permanently lost.
+*/
+
 ----------------------------------------------------------
 /*
 	Bronze Category
