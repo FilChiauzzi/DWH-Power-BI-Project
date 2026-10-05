@@ -69,8 +69,5 @@ The DWH it is **orchestrate** by Server Integration Services **SSIS** and **refr
 
 ---
 
-## 📂 Projects
-### 1. AdventureWorks – Executive Sales Dashboard
-- **Dataset OLTP:** AdventureWorks2025
-- **Focus:** Sales performance, profitability, customer insights  
-- **Tech:** Power BI, SQL Server, DAX  
+# Data Orchestration
+![pipeline](Images/pipeline.png)
