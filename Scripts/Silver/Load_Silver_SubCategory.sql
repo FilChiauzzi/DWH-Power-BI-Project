@@ -21,6 +21,7 @@ Notes:
     - Only the most recent record per ProductSubcategoryID
       is selected (ROW_NUMBER logic).
     - category_sk is resolved by joining Silver Category.
+    - SCD (type 1)
 */
 
 USE [DWH_AdventureWorks2025];
