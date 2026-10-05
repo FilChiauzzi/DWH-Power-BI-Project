@@ -11,6 +11,9 @@ Warning:
     them. All data in these tables will be permanently lost.
 */
 
+USE [DWH_AdventureWorks2025]
+GO
+
 ----------------------------------------------------------
 /*
 	Bronze Category
