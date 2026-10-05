@@ -41,6 +41,19 @@ For more details, refert to
 ## 📐✏️👷‍♀️ Architecture Proposal
 ![Data Architectures Approach](Images/Data_Architectures_Approach.png)
 
+In this project I decided to build a **Data Warehouse** because the data I work with is **highly structured** and comes from well‑defined operational systems. A DWH is the most suitable environment for organizing this type of information, applying governance, and ensuring consistency across analytical processes.
+
+Another practical reason behind this choice is the **technology available to the customer**: SQL Server and SSIS. These tools are reliable, widely adopted, and perfectly aligned with a classical DWH approach.
+
+To design the **data pipeline**, I adopted the Medallion Architecture because is simple to understand, easy to maintain, and scales well as new domains or data sources are added.
+
+This model provides a clean separation of responsibilities and simplifies the entire ETL lifecycle:
+
+* **Bronze** stores raw data exactly as received from the source, ensuring traceability and reproducibility.
+* **Silver** applies cleaning, normalization, and business rules, producing refined datasets ready for downstream consumption.
+* **Gold** exposes curated, analytics‑ready tables optimized for reporting, dashboards, and business insights.
+
+---
 # ✍🏻💡 Logical Steps to follow it
 ![DWH_Medallion_Steps.png](Images/DWH_Medallion_Steps.png)
 
