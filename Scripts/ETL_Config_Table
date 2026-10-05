@@ -1,0 +1,90 @@
+/*
+=========================================================
+ETL Configuration Table – SSIS Metadata
+=========================================================
+Purpose:
+    This script creates the ETL configuration table used by
+    SSIS to control Bronze and Silver loading processes.
+
+Usage:
+    SSIS reads this table to retrieve the list of active
+    objects (Get Config Object Name). The result set is stored
+    into an Object-type variable named "object_list".
+    A Foreach Loop then iterates over each row, assigning the
+    current object name to a variable "current_object_name",
+    which is passed to the Bronze load stored procedure.
+
+Warning:
+    Running this script will DROP and recreate the table.
+    All existing data will be permanently lost.
+*/
+
+USE [DWH_AdventureWorks2025];
+GO
+
+---------------------------------------------------------
+-- Drop & Create Table
+---------------------------------------------------------
+IF OBJECT_ID('etl.config', 'U') IS NOT NULL
+    DROP TABLE etl.config;
+
+CREATE TABLE etl.config (
+    config_key INT IDENTITY(1,1) PRIMARY KEY,
+    object_name VARCHAR(50) NOT NULL,
+    object_type VARCHAR(10) NOT NULL,
+    load_order INT NOT NULL,
+    load_type VARCHAR(20) NOT NULL,
+    scd_type VARCHAR(10) NOT NULL,
+    source_table VARCHAR(200) NOT NULL,
+    bronze_table VARCHAR(200) NOT NULL,
+    silver_table VARCHAR(200) NOT NULL,
+    is_active BIT NOT NULL,
+    watermark VARCHAR(20) NULL,
+    last_watermark_value DATETIME NULL
+);
+
+---------------------------------------------------------
+-- Insert Initial Configuration Values
+---------------------------------------------------------
+INSERT INTO etl.config (
+    object_name, object_type, load_order, load_type, scd_type,
+    source_table, bronze_table, silver_table,
+    is_active, watermark, last_watermark_value
+)
+VALUES
+-- Product
+('product', 'bronze', 30, 'full', '2',
+ 'AdventureWorks2025.Production.Product',
+ 'bronze.erp_product',
+ 'silver.erp_product',
+ 1, 'ModifiedDate', NULL),
+
+-- Category
+('category', 'bronze', 10, 'full', '1',
+ 'AdventureWorks2025.Production.ProductCategory',
+ 'bronze.erp_category',
+ 'silver.erp_category',
+ 1, NULL, NULL),
+
+-- Subcategory
+('subcategory', 'bronze', 20, 'full', '1',
+ 'AdventureWorks2025.Production.ProductSubcategory',
+ 'bronze.erp_subcategory',
+ 'silver.erp_subcategory',
+ 1, NULL, NULL);
+
+---------------------------------------------------------
+-- SSIS Query Used in Get Config Object Name
+---------------------------------------------------------
+/*
+SELECT 
+    object_name
+FROM etl.config
+WHERE is_active = 1
+ORDER BY load_order;
+
+Result:
+    Stored into SSIS variable: object_list (Object)
+    Iterated by Foreach Loop:
+        current_object_name = each object_name
+*/
