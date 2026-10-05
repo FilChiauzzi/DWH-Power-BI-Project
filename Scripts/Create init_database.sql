@@ -9,7 +9,7 @@ Script purposes:
 
 WARNING:
 	Running this scripts will drop the entire 'DataWarehouse' database if exists.
-	All dara in the database will be permanently deleted. Proced with caution and
+	All data in the database will be permanently deleted. Proced with caution and
 	ensure yuu have proper backups before running this scripts.
 */
 -- Create Database
