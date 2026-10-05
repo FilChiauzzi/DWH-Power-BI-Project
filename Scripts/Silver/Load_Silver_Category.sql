@@ -20,6 +20,7 @@ Notes:
       dwh.seq_silver_category.
     - Only the most recent record per ProductCategoryID
       is selected (ROW_NUMBER logic).
+    - SCD type 1
 */
 
 USE [DWH_AdventureWorks2025];
