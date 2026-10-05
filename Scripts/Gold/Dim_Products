@@ -1,0 +1,53 @@
+/*
+=========================================================
+Gold Layer – dim_products View
+=========================================================
+Purpose:
+    This view exposes the final dimensional Product entity
+    enriched with Subcategory and Category attributes.
+    It represents the Gold layer of the Medallion Architecture,
+    ready for consumption by Power BI and analytical workloads.
+
+Notes:
+    - Uses Silver-layer SCD2 Product table (erp_product)
+    - Joins Subcategory and Category dimensions
+    - Exposes only active SCD2 records (is_active = 1)
+*/
+
+USE DWH_AdventureWorks2025;
+GO
+
+CREATE OR ALTER VIEW gold.dim_products AS
+SELECT [product_sk]
+      ,[product_id]
+      ,[product_name]
+      ,[product_number]
+      ,[make_flag]
+      ,[finished_goods_flag]
+      ,[color]
+      ,[safety_stock_level]
+      ,[reorder_point]
+      ,[standard_cost]
+      ,[list_price]
+      ,[size]
+      ,[size_unit_measure_code]
+      ,[weight_unit_measure_code]
+      ,[weight]
+      ,[days_to_manufacture]
+      ,[product_line]
+      ,[class]
+      ,[style]
+      ,[sell_start_date]
+      ,[sell_end_date]
+      ,sc.subcategory_name
+      ,c.category_name
+      ,[dwh_start_date]
+      ,[dwh_end_date]
+      ,[is_active]
+      ,[product_subcategory_sk]
+  FROM [DWH_AdventureWorks2025].[silver].[erp_product] p
+  LEFT JOIN silver.erp_subcategory sc
+    ON  p.product_subcategory_sk = sc.subcategory_sk
+  LEFT JOIN silver.erp_category c
+    ON sc.category_sk = c.category_sk
+ WHERE p.is_active = 1;
