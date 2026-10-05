@@ -67,7 +67,6 @@ The DWH it is **orchestrate** by Server Integration Services **SSIS** and **refr
 ## 🔥 Workflow
 ![DWH_Architetcture_DataFlow.drawio](Images/DWH_Architetcture_DataFlow.drawio.png)
 
-
 ---
 
 # 🎻🎼 Data Orchestration
