@@ -154,9 +154,9 @@ CREATE TABLE bronze.erp_person(
 	[PersonType] [nchar](2) NULL,
 	[NameStyle] [nvarchar](50) NULL,
 	[Title] [nvarchar](8) NULL,
-	[FirstName] [nvarchar](20) NULL,
-	[MiddleName] [nvarchar](20) NULL,
-	[LastName] [nvarchar](20) NULL,
+	[FirstName] [nvarchar](50) NULL,
+	[MiddleName] [nvarchar](50) NULL,
+	[LastName] [nvarchar](50) NULL,
 	[Suffix] [nvarchar](10) NULL,
 	[EmailPromotion] [int] NOT NULL,
 	[AdditionalContactInfo] [xml] NULL,
@@ -175,6 +175,6 @@ IF OBJECT_ID ('bronze.erp_country_region', 'U') IS NOT NULL
 
 CREATE TABLE bronze.erp_country_region(
 	[CountryRegionCode] [nvarchar](3)  NULL,
-	[Name] [nvarchar](20) NULL,
+	[Name] [nvarchar](50) NULL,
 	[ModifiedDate] [datetime] NULL
 );
