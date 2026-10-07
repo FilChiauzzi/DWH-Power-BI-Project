@@ -79,3 +79,88 @@ CREATE TABLE silver.erp_product (
     is_active BIT NOT NULL,                   -- SCD2 active flag
     product_subcategory_sk INT NULL           -- FK to silver.erp_subcategory
 );
+
+----------------------------------------------------------
+/*
+	Silver Customer
+*/
+---------------------------------------------------------
+IF OBJECT_ID ('silver.erp_customer', 'U') IS NOT NULL 
+	DROP TABLE silver.erp_customer;
+
+CREATE TABLE silver.erp_customer(
+	[customer_sk] [int] NOT NULL,
+	[customer_id] [int] NULL,
+	[person_id] [int] NULL,
+	[store_id] [int] NULL,
+	[terrytory_id] [int] NULL,
+    [customer_type] NVARCHAR(50) NULL,
+    dwh_start_date DATETIME NOT NULL,         
+    dwh_end_date DATETIME NOT NULL,           
+    is_active BIT NOT NULL, 
+    [person_sk] [int] NULL,
+	[store_sk] [int] NULL,
+	[terrytory_sk] [int] NULL
+);
+
+----------------------------------------------------------
+/*
+	Silver Store
+*/
+---------------------------------------------------------
+IF OBJECT_ID ('silver.erp_store', 'U') IS NOT NULL 
+	DROP TABLE silver.erp_store;
+
+CREATE TABLE silver.erp_store(
+    [store_sk] [int] NOT NULL,
+	[store_id] [int] NULL,
+	[store_name] NVARCHAR(50)  NULL,
+    dwh_create_date DATETIME DEFAULT GETDATE() 
+);
+
+----------------------------------------------------------
+/*
+	Silver Sales Territory
+*/
+---------------------------------------------------------
+IF OBJECT_ID ('silver.erp_sales_territory', 'U') IS NOT NULL 
+	DROP TABLE silver.erp_sales_territory;
+
+CREATE TABLE silver.erp_sales_territory(
+    [territory_sk] [int] NOT NULL,
+	[territory_id] [int] NULL,
+	[territory_name] NVARCHAR(20) NULL,
+	[country_code] [nvarchar](3) NULL,
+	[continet_name] [nvarchar](50) NULL,
+    dwh_create_date DATETIME DEFAULT GETDATE() 
+);
+
+----------------------------------------------------------
+/*
+	Silver Person
+*/
+---------------------------------------------------------
+IF OBJECT_ID ('silver.erp_person', 'U') IS NOT NULL 
+	DROP TABLE silver.erp_person;
+
+CREATE TABLE silver.erp_person(
+    [person_sk] [int] NOT NULL,
+	[person_id] [int] NULL,
+	[person_name] [nvarchar](80) NULL,
+    dwh_create_date DATETIME DEFAULT GETDATE() 
+);
+
+----------------------------------------------------------
+/*
+	Silver Country Region
+*/
+---------------------------------------------------------
+IF OBJECT_ID ('silver.erp_country_region', 'U') IS NOT NULL 
+	DROP TABLE silver.erp_country_region;
+
+CREATE TABLE silver.erp_country_region(
+    [country_code_sk] [int] NOT NULL,
+	[country_code] [nvarchar](3)  NULL,
+	[country_name] [nvarchar](50) NULL,
+	dwh_create_date DATETIME DEFAULT GETDATE() 
+);
