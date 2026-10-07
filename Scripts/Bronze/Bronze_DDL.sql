@@ -84,3 +84,97 @@ CREATE TABLE bronze.erp_product(
 	rowguid UNIQUEIDENTIFIER NULL,
 	ModifiedDate DATETIME NULL
 );
+
+----------------------------------------------------------
+/*
+	Bronze Customer
+*/
+---------------------------------------------------------
+IF OBJECT_ID ('bronze.erp_customer', 'U') IS NOT NULL 
+	DROP TABLE bronze.erp_customer;
+
+CREATE TABLE bronze.erp_customer(
+	[CustomerID] [int] NULL,
+	[PersonID] [int] NULL,
+	[StoreID] [int] NULL,
+	[TerritoryID] [int] NULL,
+	[AccountNumber]  NVARCHAR(20) NULL,
+	[rowguid] [uniqueidentifier] NULL,
+	[ModifiedDate] [datetime] NULL,
+);
+
+----------------------------------------------------------
+/*
+	Bronze Store
+*/
+---------------------------------------------------------
+IF OBJECT_ID ('bronze.erp_store', 'U') IS NOT NULL 
+	DROP TABLE bronze.erp_store;
+
+CREATE TABLE bronze.erp_store(
+	[BusinessEntityID] [int] NULL,
+	[Name] NVARCHAR(50)  NULL,
+	[SalesPersonID] [int] NULL,
+	[Demographics]  [xml] NULL,
+	[rowguid] [uniqueidentifier]  NULL,
+	[ModifiedDate] [datetime] NULL
+);
+
+----------------------------------------------------------
+/*
+	Bronze Sales Territory
+*/
+---------------------------------------------------------
+IF OBJECT_ID ('bronze.erp_sales_territory', 'U') IS NOT NULL 
+	DROP TABLE bronze.erp_sales_territory;
+
+CREATE TABLE bronze.erp_sales_territory(
+	[TerritoryID] [int] NULL,
+	[Name] NVARCHAR(20) NULL,
+	[CountryRegionCode] [nvarchar](3) NULL,
+	[Group] [nvarchar](50) NULL,
+	[SalesYTD] [money] NULL,
+	[SalesLastYear] [money] NULL,
+	[CostYTD] [money] NULL,
+	[CostLastYear] [money] NULL,
+	[rowguid] [uniqueidentifier] NOT NULL,
+	[ModifiedDate] [datetime] NULL
+);
+
+----------------------------------------------------------
+/*
+	Bronze Person
+*/
+---------------------------------------------------------
+IF OBJECT_ID ('bronze.erp_person', 'U') IS NOT NULL 
+	DROP TABLE bronze.erp_person;
+
+CREATE TABLE bronze.erp_person(
+	[BusinessEntityID] [int] NULL,
+	[PersonType] [nchar](2) NULL,
+	[NameStyle] [nvarchar](50) NULL,
+	[Title] [nvarchar](8) NULL,
+	[FirstName] [nvarchar](20) NULL,
+	[MiddleName] [nvarchar](20) NULL,
+	[LastName] [nvarchar](20) NULL,
+	[Suffix] [nvarchar](10) NULL,
+	[EmailPromotion] [int] NOT NULL,
+	[AdditionalContactInfo] [xml] NULL,
+	[Demographics] [xml] NULL,
+	[rowguid] [uniqueidentifier] NULL,
+	[ModifiedDate] [datetime] NULL
+);
+
+----------------------------------------------------------
+/*
+	Bronze Country Region
+*/
+---------------------------------------------------------
+IF OBJECT_ID ('bronze.erp_country_region', 'U') IS NOT NULL 
+	DROP TABLE bronze.erp_country_region;
+
+CREATE TABLE bronze.erp_country_region(
+	[CountryRegionCode] [nvarchar](3)  NULL,
+	[Name] [nvarchar](20) NULL,
+	[ModifiedDate] [datetime] NULL
+);
