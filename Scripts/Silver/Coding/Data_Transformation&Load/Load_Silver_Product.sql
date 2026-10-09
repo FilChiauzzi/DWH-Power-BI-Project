@@ -143,7 +143,7 @@ BEGIN
                 ) AS row_hash,
                 ROW_NUMBER() OVER (
                     PARTITION BY p.ProductID
-                    ORDER BY p.rowguid DESC
+                    ORDER BY p.ModifiedDate DESC
                 ) AS flag_unique
             FROM bronze.erp_product p
             LEFT JOIN silver.erp_subcategory sc
