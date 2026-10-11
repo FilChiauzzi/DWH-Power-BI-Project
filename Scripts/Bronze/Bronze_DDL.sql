@@ -189,7 +189,7 @@ DROP TABLE bronze.erp_employee;
 
 CREATE TABLE bronze.erp_employee(
 	[BusinessEntityID] [int] NULL,
-	[NationalIDNumber] [nvarchar] NULL,
+	[NationalIDNumber] [nvarchar](15) NULL,
 	[LoginID] [nvarchar](256)  NULL,
 	[OrganizationNode] [hierarchyid] NULL,
 	[OrganizationLevel] [smallint] NULL,
