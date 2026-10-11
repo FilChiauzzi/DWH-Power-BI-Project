@@ -120,7 +120,7 @@ CREATE TABLE bronze.erp_store(
 	[ModifiedDate] [datetime] NULL
 );
 
-----------------------------------------------------------
+-----------------------------------------------------------
 /*
 	Bronze Sales Territory
 */
@@ -178,3 +178,141 @@ CREATE TABLE bronze.erp_country_region(
 	[Name] [nvarchar](50) NULL,
 	[ModifiedDate] [datetime] NULL
 );
+
+----------------------------------------------------------
+/*
+	Bronze Employee
+*/
+---------------------------------------------------------
+IF OBJECT_ID ('bronze.erp_employee', 'U') IS NOT NULL
+DROP TABLE bronze.erp_employee;
+
+CREATE TABLE bronze.erp_employee(
+	[BusinessEntityID] [int] NULL,
+	[NationalIDNumber] [nvarchar] NULL,
+	[LoginID] [nvarchar](256)  NULL,
+	[OrganizationNode] [hierarchyid] NULL,
+	[OrganizationLevel] [smallint] NULL,
+	[JobTitle] [nvarchar](50) NULL,
+	[BirthDate] [date]  NULL,
+	[MaritalStatus] [nchar](1)  NULL,
+	[Gender] [nchar](1)  NULL,
+	[HireDate] [date]  NULL,
+	[SalariedFlag] [bit] NULL,
+	[VacationHours] [smallint]  NULL,
+	[SickLeaveHours] [smallint]  NULL,
+	[CurrentFlag] [bit]  NULL,
+	[rowguid] [uniqueidentifier] NULL,
+	[ModifiedDate] [datetime] NULL
+	)
+
+----------------------------------------------------------
+/*
+	Bronze Sales Person
+*/
+---------------------------------------------------------
+IF OBJECT_ID ('bronze.erp_sales_person', 'U') IS NOT NULL 
+	DROP TABLE bronze.erp_sales_person;
+
+CREATE TABLE bronze.erp_sales_person(
+	[BusinessEntityID] [int] NULL,
+	[TerritoryID] [int] NULL,
+	[SalesQuota] [money] NULL,
+	[Bonus] [money] NOT NULL,
+	[CommissionPct] [smallmoney] NULL,
+	[SalesYTD] [money] NULL,
+	[SalesLastYear] [money]  NULL,
+	[rowguid] [uniqueidentifier] NULL,
+	[ModifiedDate] [datetime] NULL
+	)
+
+----------------------------------------------------------
+/*
+	Bronze Department
+*/
+---------------------------------------------------------
+IF OBJECT_ID ('bronze.erp_department', 'U') IS NOT NULL 
+	DROP TABLE bronze.erp_department;
+
+CREATE TABLE bronze.erp_department(
+	[DepartmentID] [smallint]  NULL,
+	[Name] [nvarchar](50) NULL,
+	[GroupName] [nvarchar](50) NULL,
+	[ModifiedDate] [datetime] NULL
+	)
+
+----------------------------------------------------------
+/*
+	Bronze Department History
+*/
+---------------------------------------------------------
+IF OBJECT_ID ('bronze.erp_empployee_department_history', 'U') IS NOT NULL 
+	DROP TABLE bronze.erp_empployee_department_history;
+
+CREATE TABLE bronze.erp_empployee_department_history(
+	[BusinessEntityID] [int]  NULL,
+	[DepartmentID] [smallint]  NULL,
+	[ShiftID] [tinyint]  NULL,
+	[StartDate] [date]  NULL,
+	[EndDate] [date] NULL,
+	[ModifiedDate] [datetime]  NULL
+	)
+
+----------------------------------------------------------
+/*
+	Bronze Sales Order Header
+*/
+---------------------------------------------------------
+IF OBJECT_ID ('bronze.erp_sales_order_header', 'U') IS NOT NULL 
+	DROP TABLE bronze.erp_sales_order_header;
+
+CREATE TABLE bronze.erp_sales_order_header (
+	[SalesOrderID] [int] NULL,
+	[RevisionNumber] [tinyint] NULL,
+	[OrderDate] [datetime]  NULL,
+	[DueDate] [datetime]  NULL,
+	[ShipDate] [datetime] NULL,
+	[Status] [tinyint]  NULL,
+	[OnlineOrderFlag] [bit]  NULL,
+	[SalesOrderNumber]  NVARCHAR(25) NULL,
+	[PurchaseOrderNumber] NVARCHAR(25) NULL,
+	[AccountNumber] NVARCHAR(15) NULL,
+	[CustomerID] [int] NULL,
+	[SalesPersonID] [int] NULL,
+	[TerritoryID] [int] NULL,
+	[BillToAddressID] [int]  NULL,
+	[ShipToAddressID] [int]  NULL,
+	[ShipMethodID] [int] NULL,
+	[CreditCardID] [int] NULL,
+	[CreditCardApprovalCode] [varchar](15) NULL,
+	[CurrencyRateID] [int] NULL,
+	[SubTotal] [money] NULL,
+	[TaxAmt] [money] NULL,
+	[Freight] [money] NULL,
+	[TotalDue] [money] NULL,
+	[Comment] [nvarchar](128) NULL,
+	[rowguid] [uniqueidentifier] NULL,
+	[ModifiedDate] [datetime] NULL
+	)
+
+----------------------------------------------------------
+/*
+	Bronze Sales Order Detail
+*/
+---------------------------------------------------------
+IF OBJECT_ID ('bronze.erp_sales_order_detail', 'U') IS NOT NULL 
+	DROP TABLE bronze.erp_sales_order_detail;
+
+CREATE TABLE bronze.erp_sales_order_detail (
+	[SalesOrderID] [int]  NULL,
+	[SalesOrderDetailID] [int] NULL,
+	[CarrierTrackingNumber] [nvarchar](25) NULL,
+	[OrderQty] [smallint]  NULL,
+	[ProductID] [int]  NULL,
+	[SpecialOfferID] [int]  NULL,
+	[UnitPrice] [money]  NULL,
+	[UnitPriceDiscount] [money]  NULL,
+	[LineTotal]  [numeric] (38,6) NULL,
+	[rowguid] [uniqueidentifier]  NULL,
+	[ModifiedDate] [datetime] NULL
+	)
