@@ -38,32 +38,27 @@ CREATE TABLE etl.config (
     source_table VARCHAR(200) NOT NULL,
     bronze_table VARCHAR(200) NOT NULL,
     silver_table VARCHAR(200) NOT NULL,
+    target_table VARCHAR(200) NULL,
     is_active BIT NOT NULL,
     watermark VARCHAR(20) NULL,
     last_watermark_value DATETIME NULL
 );
 
 ---------------------------------------------------------
--- Insert Initial Configuration Values
+-- Insert Updated Configuration Values
 ---------------------------------------------------------
 INSERT INTO etl.config (
     object_name, object_type, load_order, load_type, scd_type,
-    source_table, bronze_table, silver_table,
+    source_table, bronze_table, silver_table, target_table,
     is_active, watermark, last_watermark_value
 )
 VALUES
--- Product
-('product', 'bronze', 30, 'full', '2',
- 'AdventureWorks2025.Production.Product',
- 'bronze.erp_product',
- 'silver.erp_product',
- 1, 'ModifiedDate', NULL),
-
 -- Category
 ('category', 'bronze', 10, 'full', '1',
  'AdventureWorks2025.Production.ProductCategory',
  'bronze.erp_category',
  'silver.erp_category',
+ 'gold.dim_category',
  1, NULL, NULL),
 
 -- Subcategory
@@ -71,20 +66,101 @@ VALUES
  'AdventureWorks2025.Production.ProductSubcategory',
  'bronze.erp_subcategory',
  'silver.erp_subcategory',
- 1, NULL, NULL);
+ 'gold.dim_subcategory',
+ 1, NULL, NULL),
 
----------------------------------------------------------
--- SSIS Query Used in Get Config Object Name
----------------------------------------------------------
-/*
-SELECT 
-    object_name
-FROM etl.config
-WHERE is_active = 1
-ORDER BY load_order;
+-- Product
+('product', 'bronze', 30, 'full', '2',
+ 'AdventureWorks2025.Production.Product',
+ 'bronze.erp_product',
+ 'silver.erp_product',
+ 'gold.dim_product',
+ 1, 'ModifiedDate', '2024-05-22 00:00:00.000'),
 
-Result:
-    Stored into SSIS variable: object_list (Object)
-    Iterated by Foreach Loop:
-        current_object_name = each object_name
-*/
+-- Store
+('store', 'bronze', 40, 'full', '1',
+ 'AdventureWorks2025.Sales.Store',
+ 'bronze.erp_store',
+ 'silver.erp_store',
+ 'gold.dim_store',
+ 1, NULL, NULL),
+
+-- Country Region
+('country_region', 'bronze', 50, 'full', '1',
+ 'AdventureWorks2025.Person.CountryRegion',
+ 'bronze.erp_country_region',
+ 'silver.erp_country_region',
+ 'gold.dim_country_region',
+ 1, NULL, NULL),
+
+-- Person
+('person', 'bronze', 60, 'full', '1',
+ 'AdventureWorks2025.Person.Person',
+ 'bronze.erp_person',
+ 'silver.erp_person',
+ 'gold.dim_person',
+ 1, NULL, NULL),
+
+-- Sales Territory
+('sales_territory', 'bronze', 70, 'full', '1',
+ 'AdventureWorks2025.Sales.SalesTerritory',
+ 'bronze.erp_sales_territory',
+ 'silver.erp_sales_territory',
+ 'gold.dim_sales_territory',
+ 1, NULL, NULL),
+
+-- Customer
+('customer', 'bronze', 80, 'full', '1',
+ 'AdventureWorks2025.Sales.Customer',
+ 'bronze.erp_customer',
+ 'silver.erp_customer',
+ 'gold.dim_customer',
+ 1, NULL, NULL),
+
+-- Employee
+('employee', 'bronze', 90, 'full', '1',
+ 'AdventureWorks2025.HumanResources.Employee',
+ 'bronze.erp_employee',
+ 'silver.erp_employee',
+ 'gold.dim_employee',
+ 1, NULL, NULL),
+
+-- Sales Person
+('sales_person', 'bronze', 100, 'full', '1',
+ 'AdventureWorks2025.Sales.SalesPerson',
+ 'bronze.erp_sales_person',
+ 'silver.erp_sales_person',
+ 'gold.dim_sales_person',
+ 1, NULL, NULL),
+
+-- Department
+('department', 'bronze', 110, 'full', '1',
+ 'AdventureWorks2025.HumanResources.Department',
+ 'bronze.erp_department',
+ 'silver.erp_department',
+ 'gold.dim_department',
+ 1, NULL, NULL),
+
+-- Employee Department History
+('employee_department_history', 'bronze', 120, 'full', '1',
+ 'AdventureWorks2025.HumanResources.EmployeeDepartmentHistory',
+ 'bronze.erp_employee_department_history',
+ 'silver.erp_employee_department_history',
+ 'gold.dim_employee_department_history',
+ 1, NULL, NULL),
+
+-- Sales Order Header
+('sales_order_header', 'bronze', 130, 'incremental', '1',
+ 'AdventureWorks2025.Sales.SalesOrderHeader',
+ 'bronze.erp_sales_order_header',
+ 'silver.erp_sales_order_header',
+ 'gold.fact_sales_order_header',
+ 1, 'ModifiedDate', '2008-04-30 00:00:00.000'),
+
+-- Sales Order Detail
+('sales_order_detail', 'bronze', 140, 'incremental', '1',
+ 'AdventureWorks2025.Sales.SalesOrderDetail',
+ 'bronze.erp_sales_order_detail',
+ 'silver.erp_sales_order_detail',
+ 'gold.fact_sales_order_detail',
+ 1, 'ModifiedDate', '2008-04-30 00:00:00.000');
