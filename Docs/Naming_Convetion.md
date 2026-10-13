@@ -1,6 +1,6 @@
 # **Naming Conventions**
 
-This document outlines the naming conventions used for schemas, tables, views, columns, and other objects in the data warehouse.
+This document outlines the naming conventions used for schemas, tables, views, columns, stored procedures, sequences, and other objects in the data warehouse.
 
 ## **Table of Contents**
 
@@ -12,71 +12,162 @@ This document outlines the naming conventions used for schemas, tables, views, c
 3. [Column Naming Conventions](#column-naming-conventions)
    - [Surrogate Keys](#surrogate-keys)
    - [Technical Columns](#technical-columns)
+   - [Quality Columns](#quality-columns)
 4. [Stored Procedure](#stored-procedure-naming-conventions)
+5. [Sequences](#sequence-naming-conventions)
+6. [Quality Codes](#quality-codes)
 ---
 
 ## **General Principles**
 
-- **Naming Conventions**: Use snake_case, with lowercase letters and underscores (`_`) to separate words.
-- **Language**: Use English for all names.
-- **Avoid Reserved Words**: Do not use SQL reserved words as object names.
+- **Naming Conventions**: Use snake_case, lowercase, underscores (`_`).
+- **Language**: English only.
+- **Avoid Reserved Words**: Do not use SQL reserved words.
+- **Consistency**: Names must be deterministic across layers.
+- **Business Alignment**: Names must reflect business meaning, not technical implementation.
+
+---
 
 ## **Table Naming Conventions**
 
 ### **Bronze Rules**
-- All names must start with the source system name, and table names must match their original names without renaming.
-- **`<sourcesystem>_<entity>`**  
-  - `<sourcesystem>`: Name of the source system (e.g., `crm`, `erp`).  
-  - `<entity>`: Exact table name from the source system.  
-  - Example: `crm_customer_info` → Customer information from the CRM system.
+Raw ingestion layer.  
+- Names start with the **source system**.
+- Table names **match the source** exactly (no renaming).
+- Pattern:  
+  **`<sourcesystem>_<entity>`**
+- Examples:  
+  - `erp_productcategory`  
+  - `crm_customer_info`
 
 ### **Silver Rules**
-- All names must start with the source system name, and table names must match their original names without renaming.
-- **`<sourcesystem>_<entity>`**  
-  - `<sourcesystem>`: Name of the source system (e.g., `crm`, `erp`).  
-  - `<entity>`: Exact table name from the source system.  
-  - Example: `crm_customer_info` → Customer information from the CRM system.
+Cleaned, standardized, deduplicated.  
+- Names start with the **source system**.
+- Table names match the original entity.
+- Pattern:  
+  **`<sourcesystem>_<entity>`**
+- Examples:  
+  - `erp_category`  
+  - `erp_subcategory`
 
 ### **Gold Rules**
-- All names must use meaningful, business-aligned names for tables, starting with the category prefix.
-- **`<category>_<entity>`**  
-  - `<category>`: Describes the role of the table, such as `dim` (dimension) or `fact` (fact table).  
-  - `<entity>`: Descriptive name of the table, aligned with the business domain (e.g., `customers`, `products`, `sales`).  
-  - Examples:
-    - `dim_customers` → Dimension table for customer data.  
-    - `fact_sales` → Fact table containing sales transactions.  
+Business-aligned dimensional model.  
+- Names start with the **role** of the table.
+- Pattern:  
+  **`<category>_<entity>`**
+- Examples:  
+  - `dim_customer`  
+  - `dim_product`  
+  - `fact_sales`  
 
 #### **Glossary of Category Patterns**
 
 | Pattern     | Meaning                           | Example(s)                              |
 |-------------|-----------------------------------|-----------------------------------------|
-| `dim_`      | Dimension table                  | `dim_customer`, `dim_product`           |
-| `fact_`     | Fact table                       | `fact_sales`                            |
-| `report_`   | Report table                     | `report_customers`, `report_sales_monthly`   |
+| `dim_`      | Dimension table                    | `dim_customer`, `dim_product`           |
+| `fact_`     | Fact table                         | `fact_sales`                            |
+| `report_`   | Reporting table                    | `report_sales_monthly`                  |
+
+---
 
 ## **Column Naming Conventions**
 
-### **Surrogate Keys**  
-- All primary keys in dimension tables must use the suffix `_key`.
-- **`<table_name>_key`**  
-  - `<table_name>`: Refers to the name of the table or entity the key belongs to.  
-  - `_key`: A suffix indicating that this column is a surrogate key.  
-  - Example: `customer_key` → Surrogate key in the `dim_customers` table.
-  
+### **Surrogate Keys**
+- Suffix: **`_sk`**  
+- Pattern: **`<entity>_sk`**
+- Example: `category_sk`, `product_sk`
+
+### **Business Keys**
+- Use the natural key name from the source.
+- Example: `product_id`, `category_id`
+
 ### **Technical Columns**
-- All technical columns must start with the prefix `dwh_`, followed by a descriptive name indicating the column's purpose.
-- **`dwh_<column_name>`**  
-  - `dwh`: Prefix exclusively for system-generated metadata.  
-  - `<column_name>`: Descriptive name indicating the column's purpose.  
-  - Example: `dwh_load_date` → System-generated column used to store the date when the record was loaded.
- 
-## **Stored Procedure**
+Prefix: **`dwh_`**  
+Used for metadata generated by the warehouse.
 
-- All stored procedures used for loading data must follow the naming pattern:
-- **`load_<layer>`**.
-  
-  - `<layer>`: Represents the layer being loaded, such as `bronze`, `silver`, or `gold`.
-  - Example: 
-    - `load_bronze` → Stored procedure for loading data into the Bronze layer.
-    - `load_silver` → Stored procedure for loading data into the Silver layer.
+Common columns:
+- `dwh_load_date`  
+- `dwh_create_date`  
+- `dwh_batch_id`  
+- `dwh_source_row_num`  
+- `dwh_hash` (if used)
 
+### **Quality Columns**
+Used in `etl.data_quality_log` and `etl.rejected`.
+
+Standard names:
+- `batch_id`  
+- `layer`  
+- `object_name`  
+- `check_name`  
+- `record_id`  
+- `description`  
+- `severity`  
+- `raw_row`  
+- `rejected_at`  
+- `replayed_at`  
+- `replayed_batch_id`
+
+---
+
+## **Stored Procedure Naming Conventions**
+
+Stored procedures follow the pattern:
+
+### **`usp_<layer>_<action>_<entity>`**
+
+Where:
+- `usp` = user stored procedure  
+- `<layer>` = bronze, silver, gold  
+- `<action>` = check, load, transform  
+- `<entity>` = business entity  
+
+Examples:
+- `usp_check_bronze_quality_load_category`  
+- `usp_load_silver_category`  
+- `usp_load_gold_sales`  
+
+Rules:
+- Bronze SPs may include **quality checks** and **quarantine logic**.
+- Silver SPs implement **SCD1 reconcile** (UPDATE + INSERT).
+- Gold SPs implement **semantic model shaping**.
+
+---
+
+## **Sequence Naming Conventions**
+
+Sequences generate surrogate keys in Silver.
+
+Pattern:
+### **`seq_<layer>_<entity>`**
+
+Examples:
+- `seq_silver_category`
+- `seq_silver_product`
+- `seq_silver_subcategory`
+
+Rules:
+- Sequences belong to schema `dwh`.
+- FULL loads may require `ALTER SEQUENCE ... RESTART WITH 1`.
+- Incremental loads **never** reset sequences.
+
+---
+
+## **Quality Codes**
+
+Used in Bronze DQ stored procedures.
+
+Standard codes:
+- **`NULL_BK`** → Business key is NULL  
+- **`DUP_BK`** → Duplicate business key  
+- **`EMPTY_NAME`** → Name empty or whitespace  
+- **`INVALID_REF`** → Foreign key not found  
+- **`OUT_OF_RANGE`** → Numeric or date out of domain  
+
+Rules:
+- Codes must be uppercase.
+- Codes must be stable across entities.
+- Codes must be descriptive but short.
+- Codes appear in `etl.rejected.rule_code`.
+
+---
