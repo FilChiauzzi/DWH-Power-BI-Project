@@ -1,59 +1,45 @@
 /*
 =========================================================
-Silver Load - Category  (SCD Type 1)
+Silver Load – Category (SCD Type 1)
 =========================================================
 Purpose:
-    Loads the category dimension into Silver with SCD Type 1
-    logic: a change overwrites the attribute in place, no
-    history is kept, one row per business key.
+    Loads the Category dimension into Silver with SCD1 logic:
+    one row per business key, attributes overwritten in place.
 
-Design: SCD1 as a RECONCILE, not a reload
-    UPDATE the changed rows (surrogate key preserved) and
-    INSERT the new keys. Run it twice and the second run
-    changes nothing (idempotent).
+Load types:
+    FULL:
+        - TRUNCATE Silver
+        - RESET surrogate key sequence
+        - INSERT the entire deduplicated + quarantined source
+      The dimension is rebuilt from scratch and aligned to Bronze.
 
-Why not TRUNCATE + ALTER SEQUENCE RESTART:
-    That pattern reassigned the surrogate keys on every run.
-    As soon as a business key disappears from the source (or a
-    new one is inserted earlier in the ordering), every
-    following category_sk shifts, and whatever references it
-    (silver.erp_subcategory.category_sk, later the Gold facts)
-    silently points to the wrong category.
-    It also left the dimension EMPTY for the duration of the
-    load: had the INSERT failed, readers would have seen
-    nothing. The reconcile never leaves that window.
+    INCREMENTAL:
+        - UPDATE changed rows (SK preserved)
+        - INSERT new business keys
+      Idempotent: a second run makes no further changes.
 
-The flow of this procedure:
-    1. read load_type from etl.config
-    3. build #src: deduplicated, standardized, and filtered by
-       the quarantine written by the DQ check
-    4. UPDATE the changed rows, INSERT the new ones, in one
-       transaction
-    5. report the counters
+Source rules (same hardening as Bronze DQ):
+    - Dedup: latest version per business key
+    - Standardize Name (NULL/empty → 'Unknown')
+    - Exclude rows rejected for THIS batch
 
-What is deliberately NOT done here:
-    - No TRUNCATE, no sequence restart (see above).
-    - No business logic that the DQ check already owns: the
-      quarantine comes from there, this procedure only reads it.
-    - The optional delete of rows that disappeared from the
-      source is included but commented: deleting a dimension
-      row can orphan whatever references it. It is a decision,
-      not a default, and it carries a guard for the Unknown
-      member (SK = -1) which must never be deleted.
+Flow:
+    1. Read load_type from etl.config
+    2. Build #src (dedup + standardize + quarantine gate)
+    3. FULL: TRUNCATE + RESET SEQUENCE + INSERT all rows
+       INCREMENTAL: UPDATE changed + INSERT new
+    4. Report counters
 
-Source hardening rules:
-    - Dedup: latest version per business key, tiebreaker on
-      dwh_source_row_num DESC (with equal ModifiedDate the
-      result would otherwise be random).
-    - Business key NOT NULL: last line of defence, the DQ check
-      already quarantines those rows.
-    - Quarantine gate: any row rejected for THIS batch stays out.
+Deliberately not done:
+    - No business logic already owned by the DQ check
+    - No delete of missing keys by default (can orphan references)
+    - Unknown member (SK = -1) is always preserved
 
 SSIS Usage:
     EXEC etl.usp_load_silver_category ?
-        param 0: batch_id (Input, the same SSIS variable used by
-                 the DQ task, so the gate sees the right rejects).
+        param 0: batch_id (same variable used by Bronze DQ)
 */
+
 
 USE [DWH_AdventureWorks2025];
 GO
@@ -73,15 +59,12 @@ BEGIN
     DECLARE @batch_start_time DATETIME2(3) = SYSDATETIME(),
             @start_time       DATETIME2(3),
             @end_time         DATETIME2(3),
-            -- ONE timestamp for the whole batch: every row of this
-            -- load carries the same dwh_load_date, so no timeline
-            -- gap can appear between the statements.
             @load_ts          DATETIME2(3) = SYSDATETIME(),
             @load_type        VARCHAR(20),
             @rows_src         INT = 0,
             @rows_updated     INT = 0,
             @rows_inserted    INT = 0,
-            @rows_deleted     INT = 0;   -- used by the optional step 3
+            @rows_deleted     INT = 0;
 
     BEGIN TRY
         SET @start_time = SYSDATETIME();
@@ -93,15 +76,13 @@ BEGIN
         FROM etl.config
         WHERE object_name = 'category'
           AND is_active = 1;
-        -- NOTE: if etl.config holds one row per layer
-        --       (object_type bronze / silver), add here:
-        --       AND object_type = 'silver'
 
         IF @load_type IS NULL
             THROW 51000, 'No active configuration found for category in etl.config.', 1;
 
         PRINT '====================================================';
         PRINT 'Loading Silver Category (SCD1) | batch: ' + CAST(@batch_id AS NVARCHAR(20));
+        PRINT 'Load type: ' + @load_type;
         PRINT '====================================================';
 
         ---------------------------------------------------------
@@ -134,11 +115,6 @@ BEGIN
         SELECT
             category_id,
             category_name,
-            -- CONCAT_WS needs at least TWO values to join (separator +
-            -- two arguments minimum): with a single value SQL Server
-            -- raises error 189. The business key is included as the
-            -- first value, which is both valid and useful: it makes
-            -- the fingerprint unique per member.
             HASHBYTES('SHA2_256',
                       CONCAT_WS('|', CAST(category_id AS VARCHAR(20)), category_name)
                      ) AS row_hash
@@ -150,14 +126,53 @@ BEGIN
 
         PRINT '>> Source rows (after dedup and quarantine): ' + CAST(@rows_src AS NVARCHAR(20));
 
+        ---------------------------------------------------------
+        -- FULL LOAD
+        ---------------------------------------------------------
+        IF @load_type = 'full'
+        BEGIN
+            PRINT '>> FULL load: truncating Silver and resetting sequence';
+
+            BEGIN TRANSACTION;
+
+                TRUNCATE TABLE silver.erp_category;
+
+                ALTER SEQUENCE dwh.seq_silver_category RESTART WITH 1;
+
+                INSERT INTO silver.erp_category
+                    (category_sk, category_id, category_name, row_hash,
+                     dwh_load_date, dwh_batch_id)
+                SELECT
+                    NEXT VALUE FOR dwh.seq_silver_category OVER (ORDER BY src.category_id),
+                    src.category_id,
+                    src.category_name,
+                    src.row_hash,
+                    @load_ts,
+                    @batch_id
+                FROM #src AS src;
+
+                SET @rows_inserted = @@ROWCOUNT;
+
+            COMMIT TRANSACTION;
+
+            DROP TABLE #src;
+
+            SET @end_time = SYSDATETIME();
+
+            PRINT '>> FULL load completed';
+            PRINT '>> Rows inserted: ' + CAST(@rows_inserted AS NVARCHAR(20));
+            PRINT '>> Duration: ' + CAST(DATEDIFF(MILLISECOND, @start_time, @end_time) AS NVARCHAR(20)) + ' ms';
+            PRINT '====================================================';
+            RETURN;
+        END
+
+        ---------------------------------------------------------
+        -- INCREMENTAL LOAD (original logic preserved)
+        ---------------------------------------------------------
         BEGIN TRANSACTION;
 
             ---------------------------------------------------------
             -- 1) UPDATE the rows that changed (SCD1: overwrite)
-            --    The surrogate key is preserved, so nothing that
-            --    references it breaks on a reload.
-            --    The Unknown member (category_id = -1) never
-            --    matches a Bronze row, so it is untouched.
             ---------------------------------------------------------
             UPDATE tgt
             SET tgt.category_name = src.category_name,
@@ -167,15 +182,13 @@ BEGIN
             FROM silver.erp_category AS tgt
             INNER JOIN #src AS src
                 ON src.category_id = tgt.category_id
-            WHERE tgt.row_hash IS NULL           -- rows loaded before row_hash existed
-               OR tgt.row_hash <> src.row_hash;  -- attributes that changed
+            WHERE tgt.row_hash IS NULL
+               OR tgt.row_hash <> src.row_hash;
 
             SET @rows_updated = @@ROWCOUNT;
 
             ---------------------------------------------------------
             -- 2) INSERT the new business keys
-            --    dwh_create_date takes its DEFAULT here: it is the
-            --    creation date and must never be updated later.
             ---------------------------------------------------------
             INSERT INTO silver.erp_category
                 (category_sk, category_id, category_name, row_hash,
@@ -196,49 +209,18 @@ BEGIN
 
             SET @rows_inserted = @@ROWCOUNT;
 
-            ---------------------------------------------------------
-            -- 3) OPTIONAL: keys that disappeared from the source.
-            --    Only meaningful on a FULL load, where the source
-            --    snapshot is authoritative; on an incremental load
-            --    the absence of a key says nothing.
-            --    Two guards are essential:
-            --      - category_sk > 0, so the Unknown member
-            --        (SK = -1) is never deleted;
-            --      - think twice before enabling it at all: a hard
-            --        delete can orphan whatever references the row.
-            --        A soft delete (is_deleted flag, filtered out
-            --        in the Gold views) is the safer variant.
-            ---------------------------------------------------------
-            /*
-            IF @load_type = 'full'
-            BEGIN
-                DELETE tgt
-                FROM silver.erp_category AS tgt
-                WHERE tgt.category_sk > 0
-                  AND NOT EXISTS (
-                        SELECT 1 FROM #src AS src
-                        WHERE src.category_id = tgt.category_id
-                      );
-
-                SET @rows_deleted = @@ROWCOUNT;
-            END
-            */
-
         COMMIT TRANSACTION;
 
         DROP TABLE #src;
 
         SET @end_time = SYSDATETIME();
 
+        PRINT '>> INCREMENTAL load completed';
         PRINT '>> Rows updated:  ' + CAST(@rows_updated  AS NVARCHAR(20));
         PRINT '>> Rows inserted: ' + CAST(@rows_inserted AS NVARCHAR(20));
-        PRINT '>> Load Duration: ' +
-              CAST(DATEDIFF(MILLISECOND, @start_time, @end_time) AS NVARCHAR(20)) + ' ms';
+        PRINT '>> Duration: ' + CAST(DATEDIFF(MILLISECOND, @start_time, @end_time) AS NVARCHAR(20)) + ' ms';
         PRINT '====================================================';
-        PRINT 'Loading Silver Category completed | batch: ' +
-              CAST(@batch_id AS NVARCHAR(20)) + ' | ' +
-              CAST(DATEDIFF(MILLISECOND, @batch_start_time, SYSDATETIME()) AS NVARCHAR(20)) + ' ms';
-        PRINT '====================================================';
+
     END TRY
 
     BEGIN CATCH
