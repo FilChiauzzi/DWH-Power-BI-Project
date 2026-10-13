@@ -1,6 +1,6 @@
 /*
 =========================================================
-Bronze Data Quality Check - Category  (final)
+Bronze Data Quality Check - Category
 =========================================================
 Purpose:
     Validates the Bronze data that feeds the Silver category
@@ -22,11 +22,13 @@ The three steps, two tables:
 
 Changes vs the original version:
     1. The DELETE of the previous logs is gone. Quality history
-       is append-only and batch_key keeps the runs apart, so the
+       is append-only and batch_id keeps the runs apart, so the
        trend is preserved instead of erased at every run.
-    2. @batch_id BIGINT = NULL OUTPUT: the same pattern as the
-       Bronze load, so findings and loaded rows share one run id.
-       Self-registers in etl.batch when it is not passed.
+    2. @batch_id BIGINT (required input): created ONCE by SSIS at
+       the start of the run and passed to every procedure, so the
+       findings and the loaded rows all share the same run id.
+       The procedure never creates a run by itself: if the number
+       is wrong or missing, it must fail, not guess.
     3. Blocking findings also go to etl.rejected with raw_row in
        JSON. In the original the check logged and stopped there:
        the load went ahead regardless of what was found.
@@ -44,73 +46,20 @@ Changes vs the original version:
        evidence survives the alarm.
     7. No silent CATCH: rollback when a transaction is open, then
        re-throw, so SSIS sees the failure.
+    8. No DDL and no self-registration: this script only defines
+       the procedure (the tables live in 00_etl_ddl.sql).
 
 SSIS Usage:
     EXEC etl.usp_check_bronze_quality_load_category ?, ?
         param 0: batch_id         (Input, from the SSIS variable)
         param 1: max_reject_rate  (Input, e.g. 20)
-    Both have defaults, so the one-parameter call still works.
     Wire the precedence constraint "on success" to the load task.
+
+Prerequisite: run 00_etl_ddl.sql first (etl.batch, etl.rejected,
+etl.data_quality_log).
 */
 
 USE [DWH_AdventureWorks2025];
-GO
-
----------------------------------------------------------
--- Prerequisites: created only if missing, so this script
--- can be re-run without harm.
----------------------------------------------------------
-
-IF OBJECT_ID('etl.batch', 'U') IS NULL
-BEGIN
-    CREATE TABLE etl.batch (
-        batch_id     BIGINT IDENTITY(1,1) NOT NULL
-            CONSTRAINT PK_etl_batch PRIMARY KEY,
-        started_at   DATETIME2(3) NOT NULL DEFAULT SYSDATETIME(),
-        ended_at     DATETIME2(3) NULL,
-        triggered_by NVARCHAR(100) NULL,
-        notes        NVARCHAR(500) NULL
-    );
-    PRINT 'Table etl.batch created.';
-END
-GO
-
-IF OBJECT_ID('etl.rejected', 'U') IS NULL
-BEGIN
-    CREATE TABLE etl.rejected (
-        rejected_key       BIGINT IDENTITY(1,1) NOT NULL
-            CONSTRAINT PK_etl_rejected PRIMARY KEY,
-        batch_key          BIGINT        NOT NULL,   -- logical FK -> etl.batch.batch_id
-        layer              NVARCHAR(10)  NOT NULL,
-        object_name        NVARCHAR(50)  NOT NULL,
-        business_key       NVARCHAR(200) NULL,
-        rule_code          NVARCHAR(100) NOT NULL,
-        rule_description   NVARCHAR(500) NULL,
-        severity           NVARCHAR(20)  NOT NULL
-            CONSTRAINT DF_etl_rejected_severity DEFAULT ('error'),
-        raw_row            NVARCHAR(MAX) NULL,       -- original row as JSON
-        rejected_at        DATETIME2(3)  NOT NULL
-            CONSTRAINT DF_etl_rejected_rejected_at DEFAULT SYSDATETIME(),
-        replayed_at        DATETIME2(3)  NULL,
-        replayed_batch_key BIGINT        NULL
-    );
-    PRINT 'Table etl.rejected created.';
-END
-GO
-
-IF NOT EXISTS (SELECT 1 FROM sys.indexes
-               WHERE name = 'ix_etl_rejected_gate'
-                 AND object_id = OBJECT_ID('etl.rejected'))
-    CREATE INDEX ix_etl_rejected_gate
-        ON etl.rejected (layer, object_name, batch_key)
-        INCLUDE (business_key, replayed_at);
-GO
-
-IF COL_LENGTH('etl.data_quality_log', 'batch_key') IS NULL
-BEGIN
-    ALTER TABLE etl.data_quality_log ADD batch_key BIGINT NULL;
-    PRINT 'Column etl.data_quality_log.batch_key added.';
-END
 GO
 
 SET ANSI_NULLS ON;
@@ -119,7 +68,7 @@ SET QUOTED_IDENTIFIER ON;
 GO
 
 CREATE OR ALTER PROCEDURE [etl].[usp_check_bronze_quality_load_category]
-    @batch_id        BIGINT       = NULL OUTPUT,
+    @batch_id        BIGINT,
     @max_reject_rate DECIMAL(5,2) = 20.00
 AS
 BEGIN
@@ -133,17 +82,6 @@ BEGIN
             @reject_rate      DECIMAL(9,4)  = 0;
 
     BEGIN TRY
-        ---------------------------------------------------------
-        -- Batch resolution: the same pattern as the Bronze load
-        ---------------------------------------------------------
-        IF @batch_id IS NULL
-        BEGIN
-            INSERT INTO etl.batch (triggered_by, notes)
-            VALUES (SUSER_SNAME(), 'self-registered DQ check for object: category');
-
-            SET @batch_id = SCOPE_IDENTITY();
-        END
-
         PRINT '====================================================';
         PRINT 'Bronze Data Quality - category | batch: ' + CAST(@batch_id AS NVARCHAR(20));
         PRINT '====================================================';
@@ -161,7 +99,7 @@ BEGIN
             IF @rows_checked = 0
             BEGIN
                 INSERT INTO etl.data_quality_log
-                    (batch_key, layer, object_name, check_name, record_id, description, severity)
+                    (batch_id, layer, object_name, check_name, record_id, description, severity)
                 VALUES
                     (@batch_id, 'bronze', 'category', 'Source empty', NULL,
                      'bronze.erp_category contains no rows', 'warning');
@@ -173,7 +111,7 @@ BEGIN
             PRINT '-- Rule 1: ProductCategoryID NULL';
 
             INSERT INTO etl.data_quality_log
-                (batch_key, layer, object_name, check_name, record_id, description, severity)
+                (batch_id, layer, object_name, check_name, record_id, description, severity)
             SELECT @batch_id, 'bronze', 'category',
                    'ProductCategoryID NULL',
                    CAST(b.ProductCategoryID AS NVARCHAR(200)),
@@ -184,7 +122,7 @@ BEGIN
 
             -- Quarantine: the row will not enter Silver.
             INSERT INTO etl.rejected
-                (batch_key, layer, object_name, business_key, rule_code,
+                (batch_id, layer, object_name, business_key, rule_code,
                  rule_description, severity, raw_row)
             SELECT @batch_id, 'bronze', 'category',
                    CAST(b.ProductCategoryID AS NVARCHAR(200)),
@@ -208,7 +146,7 @@ BEGIN
             PRINT '-- Rule 2: duplicated ProductCategoryID';
 
             INSERT INTO etl.data_quality_log
-                (batch_key, layer, object_name, check_name, record_id, description, severity)
+                (batch_id, layer, object_name, check_name, record_id, description, severity)
             SELECT @batch_id, 'bronze', 'category',
                    'Duplicate ProductCategoryID',
                    CAST(b.ProductCategoryID AS NVARCHAR(200)),
@@ -219,7 +157,7 @@ BEGIN
             HAVING COUNT(*) > 1;
 
             INSERT INTO etl.rejected
-                (batch_key, layer, object_name, business_key, rule_code,
+                (batch_id, layer, object_name, business_key, rule_code,
                  rule_description, severity, raw_row)
             SELECT @batch_id, 'bronze', 'category',
                    CAST(b.ProductCategoryID AS NVARCHAR(200)),
@@ -248,7 +186,7 @@ BEGIN
             PRINT '-- Rule 3: name NULL or empty (warning)';
 
             INSERT INTO etl.data_quality_log
-                (batch_key, layer, object_name, check_name, record_id, description, severity)
+                (batch_id, layer, object_name, check_name, record_id, description, severity)
             SELECT @batch_id, 'bronze', 'category',
                    'Name NULL or empty',
                    CAST(b.ProductCategoryID AS NVARCHAR(200)),
@@ -267,14 +205,14 @@ BEGIN
         ---------------------------------------------------------
         SELECT @errors = COUNT(*)
         FROM etl.data_quality_log
-        WHERE batch_key   = @batch_id
+        WHERE batch_id   = @batch_id
           AND layer       = 'bronze'
           AND object_name = 'category'
           AND severity IN ('error', 'critical');   -- warnings excluded
 
         SELECT @rows_rejected = COUNT(*)
         FROM etl.rejected
-        WHERE batch_key   = @batch_id
+        WHERE batch_id   = @batch_id
           AND layer       = 'bronze'
           AND object_name = 'category';
 
@@ -320,7 +258,3 @@ BEGIN
     END CATCH
 END;
 GO
-
-PRINT 'Procedure etl.usp_check_bronze_quality_load_category created.';
-GO
-
