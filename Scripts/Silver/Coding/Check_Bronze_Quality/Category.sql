@@ -93,13 +93,11 @@ BEGIN
 
             ---------------------------------------------------------
             -- RULE 0: source empty  ->  warning
-            -- A load that brought back nothing is worth noticing,
-            -- but it is not by itself a data defect.
             ---------------------------------------------------------
             IF @rows_checked = 0
             BEGIN
                 INSERT INTO etl.data_quality_log
-                    (batch_id, layer, object_name, check_name, record_id, description, severity)
+                    (batch_key, layer, object_name, check_name, record_id, description, severity)
                 VALUES
                     (@batch_id, 'bronze', 'category', 'Source empty', NULL,
                      'bronze.erp_category contains no rows', 'warning');
@@ -111,7 +109,7 @@ BEGIN
             PRINT '-- Rule 1: ProductCategoryID NULL';
 
             INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
+                (batch_key, layer, object_name, check_name, record_id, description, severity)
             SELECT @batch_id, 'bronze', 'category',
                    'ProductCategoryID NULL',
                    CAST(b.ProductCategoryID AS NVARCHAR(200)),
@@ -120,9 +118,9 @@ BEGIN
             FROM bronze.erp_category AS b
             WHERE b.ProductCategoryID IS NULL;
 
-            -- Quarantine: the row will not enter Silver.
+            -- Quarantine
             INSERT INTO etl.rejected
-                (batch_id, layer, object_name, business_key, rule_code,
+                (batch_key, layer, object_name, business_key, rule_code,
                  rule_description, severity, raw_row)
             SELECT @batch_id, 'bronze', 'category',
                    CAST(b.ProductCategoryID AS NVARCHAR(200)),
@@ -139,14 +137,11 @@ BEGIN
 
             ---------------------------------------------------------
             -- RULE 2: duplicated business key  ->  error (blocking)
-            -- Every row sharing the duplicated key is quarantined:
-            -- with a non unique key there is no way to tell which
-            -- version is the right one.
             ---------------------------------------------------------
             PRINT '-- Rule 2: duplicated ProductCategoryID';
 
             INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
+                (batch_key, layer, object_name, check_name, record_id, description, severity)
             SELECT @batch_id, 'bronze', 'category',
                    'Duplicate ProductCategoryID',
                    CAST(b.ProductCategoryID AS NVARCHAR(200)),
@@ -157,7 +152,7 @@ BEGIN
             HAVING COUNT(*) > 1;
 
             INSERT INTO etl.rejected
-                (batch_id, layer, object_name, business_key, rule_code,
+                (batch_key, layer, object_name, business_key, rule_code,
                  rule_description, severity, raw_row)
             SELECT @batch_id, 'bronze', 'category',
                    CAST(b.ProductCategoryID AS NVARCHAR(200)),
@@ -179,14 +174,12 @@ BEGIN
                 ON d.ProductCategoryID = b.ProductCategoryID;
 
             ---------------------------------------------------------
-            -- RULE 3: name NULL or empty  ->  warning (not blocking)
-            -- The load substitutes 'Unknown': the row is acceptable.
-            -- Logged so the issue stays visible over time.
+            -- RULE 3: name NULL or empty  ->  warning
             ---------------------------------------------------------
             PRINT '-- Rule 3: name NULL or empty (warning)';
 
             INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
+                (batch_key, layer, object_name, check_name, record_id, description, severity)
             SELECT @batch_id, 'bronze', 'category',
                    'Name NULL or empty',
                    CAST(b.ProductCategoryID AS NVARCHAR(200)),
@@ -197,22 +190,20 @@ BEGIN
                OR LTRIM(RTRIM(b.[Name])) = '';
 
         COMMIT TRANSACTION;
-        -- Committed BEFORE the guard below, so the evidence
-        -- survives even when the pipeline is stopped.
 
         ---------------------------------------------------------
         -- Summary
         ---------------------------------------------------------
         SELECT @errors = COUNT(*)
         FROM etl.data_quality_log
-        WHERE batch_id   = @batch_id
+        WHERE batch_key   = @batch_id
           AND layer       = 'bronze'
           AND object_name = 'category'
-          AND severity IN ('error', 'critical');   -- warnings excluded
+          AND severity IN ('error', 'critical');
 
         SELECT @rows_rejected = COUNT(*)
         FROM etl.rejected
-        WHERE batch_id   = @batch_id
+        WHERE batch_key   = @batch_id
           AND layer       = 'bronze'
           AND object_name = 'category';
 
@@ -238,7 +229,6 @@ BEGIN
         PRINT 'Bronze Data Quality - category completed | batch: ' + CAST(@batch_id AS NVARCHAR(20));
         PRINT '====================================================';
 
-        -- Informational only: SSIS reads success/failure, not this.
         RETURN @errors;
     END TRY
 
