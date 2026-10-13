@@ -1,6 +1,6 @@
 /*
 =========================================================
-Silver Load - Category  (SCD Type 1, final)
+Silver Load - Category  (SCD Type 1)
 =========================================================
 Purpose:
     Loads the category dimension into Silver with SCD Type 1
@@ -24,8 +24,7 @@ Why not TRUNCATE + ALTER SEQUENCE RESTART:
     nothing. The reconcile never leaves that window.
 
 The flow of this procedure:
-    1. resolve the batch (one id shared by the whole run)
-    2. read load_type from etl.config
+    1. read load_type from etl.config
     3. build #src: deduplicated, standardized, and filtered by
        the quarantine written by the DQ check
     4. UPDATE the changed rows, INSERT the new ones, in one
@@ -52,10 +51,8 @@ Source hardening rules:
 
 SSIS Usage:
     EXEC etl.usp_load_silver_category ?
-        param 0: batch_id (Input, the same variable used by the
-                 DQ task, so the gate sees the right rejects).
-        With no parameter it self-registers, handy from SSMS but
-        not the production flow.
+        param 0: batch_id (Input, the same SSIS variable used by
+                 the DQ task, so the gate sees the right rejects).
 */
 
 USE [DWH_AdventureWorks2025];
@@ -67,7 +64,7 @@ SET QUOTED_IDENTIFIER ON;
 GO
 
 CREATE OR ALTER PROCEDURE [etl].[usp_load_silver_category]
-    @batch_id BIGINT = NULL OUTPUT
+    @batch_id BIGINT
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -88,17 +85,6 @@ BEGIN
 
     BEGIN TRY
         SET @start_time = SYSDATETIME();
-
-        ---------------------------------------------------------
-        -- Batch resolution (same pattern as the Bronze load)
-        ---------------------------------------------------------
-        IF @batch_id IS NULL
-        BEGIN
-            INSERT INTO etl.batch (triggered_by, notes)
-            VALUES (SUSER_SNAME(), 'self-registered silver load for object: category');
-
-            SET @batch_id = SCOPE_IDENTITY();
-        END
 
         ---------------------------------------------------------
         -- Configuration, the same source of truth as Bronze
@@ -139,7 +125,7 @@ BEGIN
               AND NOT EXISTS (
                     SELECT 1
                     FROM etl.rejected AS r
-                    WHERE r.batch_key    = @batch_id
+                    WHERE r.batch_id    = @batch_id
                       AND r.layer        = 'bronze'
                       AND r.object_name  = 'category'
                       AND r.business_key = CAST(b.ProductCategoryID AS NVARCHAR(200))
@@ -148,10 +134,14 @@ BEGIN
         SELECT
             category_id,
             category_name,
+            -- CONCAT_WS needs at least TWO values to join (separator +
+            -- two arguments minimum): with a single value SQL Server
+            -- raises error 189. The business key is included as the
+            -- first value, which is both valid and useful: it makes
+            -- the fingerprint unique per member.
             HASHBYTES('SHA2_256',
-                CONCAT_WS('|', CAST(category_id AS VARCHAR(20)), category_name)
-            ) AS row_hash
-
+                      CONCAT_WS('|', CAST(category_id AS VARCHAR(20)), category_name)
+                     ) AS row_hash
         INTO #src
         FROM cte
         WHERE rn = 1;
@@ -271,6 +261,4 @@ BEGIN
 END;
 GO
 
-PRINT 'Procedure etl.usp_load_silver_category created.';
-GO
 
