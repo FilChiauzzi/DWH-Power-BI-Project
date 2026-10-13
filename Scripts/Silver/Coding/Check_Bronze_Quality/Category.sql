@@ -97,7 +97,7 @@ BEGIN
             IF @rows_checked = 0
             BEGIN
                 INSERT INTO etl.data_quality_log
-                    (batch_key, layer, object_name, check_name, record_id, description, severity)
+                    (batch_id, layer, object_name, check_name, record_id, description, severity)
                 VALUES
                     (@batch_id, 'bronze', 'category', 'Source empty', NULL,
                      'bronze.erp_category contains no rows', 'warning');
@@ -109,7 +109,7 @@ BEGIN
             PRINT '-- Rule 1: ProductCategoryID NULL';
 
             INSERT INTO etl.data_quality_log
-                (batch_key, layer, object_name, check_name, record_id, description, severity)
+                (batch_id, layer, object_name, check_name, record_id, description, severity)
             SELECT @batch_id, 'bronze', 'category',
                    'ProductCategoryID NULL',
                    CAST(b.ProductCategoryID AS NVARCHAR(200)),
@@ -120,7 +120,7 @@ BEGIN
 
             -- Quarantine
             INSERT INTO etl.rejected
-                (batch_key, layer, object_name, business_key, rule_code,
+                (batch_id, layer, object_name, business_key, rule_code,
                  rule_description, severity, raw_row)
             SELECT @batch_id, 'bronze', 'category',
                    CAST(b.ProductCategoryID AS NVARCHAR(200)),
@@ -141,7 +141,7 @@ BEGIN
             PRINT '-- Rule 2: duplicated ProductCategoryID';
 
             INSERT INTO etl.data_quality_log
-                (batch_key, layer, object_name, check_name, record_id, description, severity)
+                (batch_id, layer, object_name, check_name, record_id, description, severity)
             SELECT @batch_id, 'bronze', 'category',
                    'Duplicate ProductCategoryID',
                    CAST(b.ProductCategoryID AS NVARCHAR(200)),
@@ -152,7 +152,7 @@ BEGIN
             HAVING COUNT(*) > 1;
 
             INSERT INTO etl.rejected
-                (batch_key, layer, object_name, business_key, rule_code,
+                (batch_id, layer, object_name, business_key, rule_code,
                  rule_description, severity, raw_row)
             SELECT @batch_id, 'bronze', 'category',
                    CAST(b.ProductCategoryID AS NVARCHAR(200)),
@@ -179,7 +179,7 @@ BEGIN
             PRINT '-- Rule 3: name NULL or empty (warning)';
 
             INSERT INTO etl.data_quality_log
-                (batch_key, layer, object_name, check_name, record_id, description, severity)
+                (batch_id, layer, object_name, check_name, record_id, description, severity)
             SELECT @batch_id, 'bronze', 'category',
                    'Name NULL or empty',
                    CAST(b.ProductCategoryID AS NVARCHAR(200)),
@@ -196,14 +196,14 @@ BEGIN
         ---------------------------------------------------------
         SELECT @errors = COUNT(*)
         FROM etl.data_quality_log
-        WHERE batch_key   = @batch_id
+        WHERE batch_id   = @batch_id
           AND layer       = 'bronze'
           AND object_name = 'category'
           AND severity IN ('error', 'critical');
 
         SELECT @rows_rejected = COUNT(*)
         FROM etl.rejected
-        WHERE batch_key   = @batch_id
+        WHERE batch_id   = @batch_id
           AND layer       = 'bronze'
           AND object_name = 'category';
 
