@@ -40,15 +40,18 @@ Improvements kept from v2 (unchanged):
     - @@ROWCOUNT captured for logging.
 
 SSIS Usage:
-    - The Foreach Loop iterates over an Object variable
-      "object_list" containing active object names.
-    - Each iteration assigns the current object name to
-      "current_object_name".
+    - A Start Batch task creates the run once and puts the number
+      in the SSIS variable User::batch_id.
+    - The Foreach Loop iterates over "object_list"; each iteration
+      assigns the object name to "current_object_name".
     - This procedure is executed via an Execute SQL Task:
-          EXEC etl.usp_load_bronze ?, @batch_id OUTPUT
-      (declare an SSIS variable batch_id, fill it once before
-      the loop, pass it to every call of the run).
-    - If you do not pass it, the procedure creates its own batch.
+          EXEC etl.usp_load_bronze ?, ?
+        param 0: object_name (Input, User::current_object_name)
+        param 1: batch_id    (Input, User::batch_id)
+    - The procedure never creates a run by itself.
+
+Prerequisite: run 00_etl_ddl.sql first (etl.batch, etl.rejected,
+etl.data_quality_log).
 
 Warning:
     This procedure performs TRUNCATE TABLE during FULL loads.
@@ -58,24 +61,6 @@ Warning:
 USE [DWH_AdventureWorks2025];
 GO
 
----------------------------------------------------------
--- Batch registry: one row per pipeline run.
--- Idempotent: created only if it does not exist.
----------------------------------------------------------
-IF OBJECT_ID('etl.batch', 'U') IS NULL
-BEGIN
-    CREATE TABLE etl.batch (
-        batch_id     BIGINT IDENTITY(1,1) NOT NULL
-            CONSTRAINT PK_etl_batch PRIMARY KEY,
-        started_at   DATETIME2(3) NOT NULL DEFAULT SYSDATETIME(),
-        ended_at     DATETIME2(3) NULL,
-        triggered_by NVARCHAR(100) NULL,   -- who/what started it (SUSER_SNAME(), SSIS, SQL Agent job)
-        notes        NVARCHAR(500) NULL
-    );
-    PRINT 'Table etl.batch created.';
-END
-GO
-
 SET ANSI_NULLS ON;
 GO
 SET QUOTED_IDENTIFIER ON;
@@ -83,7 +68,7 @@ GO
 
 CREATE OR ALTER PROCEDURE [etl].[usp_load_bronze]
     @object_name VARCHAR(50),
-    @batch_id    BIGINT = NULL OUTPUT
+    @batch_id    BIGINT
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -97,19 +82,6 @@ BEGIN
 
     BEGIN TRY
         SET @batch_start_time = SYSDATETIME();
-
-        ---------------------------------------------------------
-        -- Batch resolution:
-        -- if the caller (SSIS) did not pass a batch_id, this
-        -- execution registers itself in etl.batch.
-        ---------------------------------------------------------
-        IF @batch_id IS NULL
-        BEGIN
-            INSERT INTO etl.batch (triggered_by, notes)
-            VALUES (SUSER_SNAME(), 'self-registered by usp_load_bronze for object: ' + @object_name);
-
-            SET @batch_id = SCOPE_IDENTITY();
-        END
 
         PRINT '====================================================';
         PRINT 'Retrieve configuration for object: ' + @object_name;
@@ -296,8 +268,5 @@ BEGIN
         THROW;
     END CATCH
 END;
-GO
-
-PRINT 'Procedure etl.usp_load_bronze created.';
 GO
 
