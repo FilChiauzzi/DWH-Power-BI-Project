@@ -1,3 +1,59 @@
+/*
+=========================================================
+Bronze Data Quality Check – Store
+=========================================================
+Purpose:
+    Validates the Bronze data that feeds the Silver store
+    dimension and records the outcome in the quality framework.
+
+The three steps, two tables:
+    1. DETECT      evaluate the rules on bronze.erp_store
+    2. LOG         every finding -> etl.data_quality_log
+                   (append-only: it is the quality trend;
+                   warnings included, they block nothing)
+    3. QUARANTINE  the blocking findings -> etl.rejected
+                   (row level, with the rule and the original
+                   row serialized in JSON; this is what the load
+                   procedure reads to exclude the row)
+
+Why two tables:
+    etl.data_quality_log = "how good is the data, over time?"
+    etl.rejected         = "which rows are waiting for a fix?"
+
+Changes vs the original version:
+    1. No DELETE of previous logs: quality history is append-only.
+       batch_id separates runs and preserves the trend.
+    2. @batch_id BIGINT (required input): created ONCE by SSIS at
+       the start of the run and passed to every procedure. The
+       procedure never creates a batch id by itself.
+    3. Blocking findings also go to etl.rejected with raw_row in
+       JSON. The load procedure excludes these rows.
+    4. Severity matches what the Silver load really does:
+         BusinessEntityID NULL       -> error   (blocking)
+         Duplicate BusinessEntityID  -> error   (blocking)
+         Name NULL or empty          -> warning (NOT blocking)
+       Silver substitutes 'Unknown', so the row is still valid.
+    5. DATETIME2(3) / SYSDATETIME() instead of DATETIME / GETDATE().
+    6. Threshold guard: if the rejection rate exceeds
+       @max_reject_rate %, the procedure fails intentionally.
+       Findings are COMMITTED before the guard, so evidence
+       survives the alarm.
+    7. No silent CATCH: rollback when a transaction is open, then
+       re-throw, so SSIS sees the failure.
+    8. No DDL and no self-registration: this script only defines
+       the procedure (the tables live in 00_etl_ddl.sql).
+
+SSIS Usage:
+    EXEC etl.usp_check_bronze_quality_load_store ?, ?
+        param 0: batch_id         (Input, from the SSIS variable)
+        param 1: max_reject_rate  (Input, e.g. 20)
+    Wire the precedence constraint "on success" to the load task.
+
+Prerequisite:
+    Run 00_etl_ddl.sql first (etl.batch, etl.rejected,
+    etl.data_quality_log).
+*/
+
 USE [DWH_AdventureWorks2025]
 GO
 SET ANSI_NULLS ON
