@@ -73,55 +73,49 @@ CREATE TABLE bronze.erp_subcategory(
 
 CREATE CLUSTERED COLUMNSTORE INDEX cci_erp_subcategory ON bronze.erp_subcategory;
 GO
-
 -----------------------------------------------
 /*
 	Bronze Product
 */
 -----------------------------------------------
------------------------------------------------
-/*
-    Bronze Product
-*/
------------------------------------------------
 
 IF OBJECT_ID ('bronze.erp_product', 'U') IS NOT NULL 
-    DROP TABLE bronze.erp_product;
+	DROP TABLE bronze.erp_product;
 
 CREATE TABLE bronze.erp_product(
-    ProductID INT NULL,
-    [Name] NVARCHAR(50) NULL,
-    ProductNumber NVARCHAR(25) NULL,
-    MakeFlag BIT NULL,
-    FinishedGoodsFlag BIT NULL,
-    Color NVARCHAR(15) NULL,
-    SafetyStockLevel SMALLINT NULL,
-    ReorderPoint SMALLINT NULL,
-    StandardCost DECIMAL(19, 4) NULL,
-    ListPrice DECIMAL(19, 4) NULL,
-    [Size] NVARCHAR(5) NULL,
-    SizeUnitMeasureCode NCHAR(3) NULL,
-    WeightUnitMeasureCode NCHAR(3) NULL,
-    [Weight] DECIMAL(8, 2) NULL,
-    DaysToManufacture INT NULL,
-    ProductLine NCHAR(2) NULL,
-    Class NCHAR(2) NULL,
-    Style NCHAR(2) NULL,
-    ProductSubcategoryID INT NULL,
-    ProductModelID INT NULL,
-    SellStartDate DATETIME NULL,
-    SellEndDate DATETIME NULL,
-    DiscontinuedDate DATETIME NULL,
-    rowguid UNIQUEIDENTIFIER NULL,
-    ModifiedDate DATETIME NULL,
+	ProductID INT NULL,
+	[Name] NVARCHAR(50) NULL,
+	ProductNumber NVARCHAR(25) NULL,
+	MakeFlag BIT NULL,
+	FinishedGoodsFlag BIT NULL,
+	Color NVARCHAR(15) NULL,
+	SafetyStockLevel SMALLINT NULL,
+	ReorderPoint SMALLINT NULL,
+	StandardCost DECIMAL(19, 4) NULL,
+	ListPrice DECIMAL(19, 4) NULL,
+	[Size] NVARCHAR(5) NULL,
+	SizeUnitMeasureCode NCHAR(3) NULL,
+	WeightUnitMeasureCode NCHAR(3) NULL,
+	[Weight] DECIMAL(8, 2) NULL,
+	DaysToManufacture INT NULL,
+	ProductLine NCHAR(2) NULL,
+	Class NCHAR(2) NULL,
+	Style NCHAR(2) NULL,
+	[ProductSubcategoryID] INT NULL,
+	ProductModelID INT NULL,
+	SellStartDate DATETIME NULL,
+	SellEndDate DATETIME NULL,
+	DiscontinuedDate DATETIME NULL,
+	rowguid UNIQUEIDENTIFIER NULL,
+	ModifiedDate DATETIME NULL,
 
-    dwh_load_date DATETIME2(3) NOT NULL DEFAULT SYSDATETIME(),
-    dwh_batch_id BIGINT NULL,
-    dwh_source_row_num BIGINT NULL
+	dwh_load_date DATETIME2(3) NOT NULL DEFAULT SYSDATETIME(),
+	dwh_batch_id BIGINT NULL,
+	dwh_source_row_num BIGINT NULL
 );
 
 CREATE CLUSTERED COLUMNSTORE INDEX cci_erp_product ON bronze.erp_product;
-GO
+GO allora modiifca il ddl e il bronze quality
 
 ----------------------------------------------------------
 /*
