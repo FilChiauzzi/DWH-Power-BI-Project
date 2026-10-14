@@ -1,65 +1,57 @@
 /*
 =========================================================
-Silver Load – Store (SCD1)
+Silver Load – Store (SCD Type 1)
 =========================================================
 Purpose:
-    Loads the Silver store dimension from bronze.erp_store,
-    applying SCD Type 1 logic and excluding rows flagged by
-    the Bronze Data Quality checks.
+    Loads the Store dimension into Silver with SCD1 logic:
+    one row per business key, attributes overwritten in place.
 
-The three steps:
-    1. BUILD SOURCE SET
-         - Deduplicate bronze rows using ROW_NUMBER()
-         - Standardize attributes (trim, substitute Unknown)
-         - Exclude rows present in etl.rejected for this batch
-         - Compute row_hash (SHA2_256) for change detection
+Load types:
+    FULL:
+        - TRUNCATE Silver
+        - RESET surrogate key sequence
+        - INSERT the entire deduplicated + quarantined source
+      The dimension is rebuilt from scratch and aligned to Bronze.
 
-    2. FULL LOAD
-         - Truncate silver.erp_store
-         - Reset surrogate key sequence
-         - Insert all cleaned rows
-         - SCD1: only one active version per business key
+    INCREMENTAL:
+        - Read delta rows using ModifiedDate > last_watermark_value
+        - UPDATE changed rows (SK preserved)
+        - INSERT new business keys
+        - Update last_watermark_value in etl.config
+      Idempotent: a second run makes no further changes.
 
-    3. INCREMENTAL LOAD
-         - Read delta rows using ModifiedDate > last_watermark_value
-         - UPDATE rows where row_hash changed
+Source rules (same hardening as Bronze DQ):
+    - Dedup: latest version per business key
+    - Standardize Name (NULL/empty → 'Unknown')
+    - Exclude rows rejected for THIS batch
+    - Compute row_hash (SHA2_256) for change detection
+
+Flow:
+    1. Read load_type and last_watermark_value from etl.config
+    2. FULL:
+         - Build #src_full (dedup + standardize + quarantine gate)
+         - TRUNCATE + RESET SEQUENCE + INSERT all rows
+    3. INCREMENTAL:
+         - Build #src_delta (delta + quarantine gate)
+         - UPDATE changed rows (row_hash comparison)
          - INSERT new business keys
-         - Update last_watermark_value in etl.config
+         - Update watermark
+    4. Report counters
+
+Deliberately not done:
+    - No business logic already owned by the DQ check
+    - No delete of missing keys (SCD1 never deletes)
+    - Unknown member (SK = -1) is always preserved
 
 Why SCD1:
     Store is a stable master entity. Changes overwrite previous
     values instead of generating historical versions. Only the
     latest version of each store is kept.
 
-Watermark:
-    last_watermark_value ensures incremental loads only process
-    new or changed rows. FULL loads ignore the watermark.
-
-Quarantine:
-    Rows violating Bronze DQ rules are excluded via etl.rejected.
-    This prevents bad data from entering the Silver layer.
-
-Error handling:
-    - TRY/CATCH with rollback when a transaction is open
-    - Re-throw the error so SSIS can detect the failure
-    - No silent failures
-
-Consistency with the ETL Framework:
-    - Same structure as category, subcategory, and product
-    - FULL + INCREMENTAL branches explicitly declared
-    - row_hash used for SCD1 change detection
-    - temp tables (#src_full / #src_delta) for clean staging
-    - All timestamps use DATETIME2(3) / SYSDATETIME()
-
 SSIS Usage:
     EXEC etl.usp_load_silver_store ?
-        param 0: batch_id (Input, from SSIS variable)
-
-Prerequisite:
-    Run 00_etl_ddl.sql first (etl.batch, etl.rejected,
-    etl.data_quality_log, sequences, Silver tables).
+        param 0: batch_id (same variable used by Bronze DQ)
 */
-
 
 USE [DWH_AdventureWorks2025]
 GO
