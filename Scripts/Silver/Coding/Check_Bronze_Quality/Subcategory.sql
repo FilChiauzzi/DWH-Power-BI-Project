@@ -30,118 +30,219 @@ SET QUOTED_IDENTIFIER ON;
 GO
 
 CREATE OR ALTER PROCEDURE [etl].[usp_check_bronze_quality_load_subcategory]
+    @batch_id        BIGINT,
+    @max_reject_rate DECIMAL(5,2) = 20.00
 AS
 BEGIN
     SET NOCOUNT ON;
+    SET XACT_ABORT ON;
 
-    DECLARE @batch_start_time DATETIME, @batch_end_time DATETIME;
-    SET @batch_start_time = GETDATE();
+    DECLARE @batch_start_time DATETIME2(3) = SYSDATETIME(),
+            @rows_checked     INT           = 0,
+            @rows_rejected    INT           = 0,
+            @errors           INT           = 0,
+            @reject_rate      DECIMAL(9,4)  = 0;
 
-    PRINT '====================================================';
-    PRINT 'Delete previous logs from DataQualityLog';
-    PRINT '====================================================';
+    BEGIN TRY
+        PRINT '====================================================';
+        PRINT 'Bronze Data Quality - subcategory | batch: ' + CAST(@batch_id AS NVARCHAR(20));
+        PRINT '====================================================';
 
-    DELETE FROM etl.data_quality_log
-    WHERE layer = 'bronze'
-      AND object_name = 'subcategory';
+        BEGIN TRANSACTION;
 
-    ---------------------------------------------------------
-    -- Check 1: ProductSubcategoryID NULL
-    ---------------------------------------------------------
-    PRINT '====================================================';
-    PRINT 'Check ProductSubcategoryID NULL';
-    PRINT '====================================================';
+            ---------------------------------------------------------
+            -- Count source rows
+            ---------------------------------------------------------
+            SELECT @rows_checked = COUNT(*)
+            FROM bronze.erp_subcategory;
 
-    INSERT INTO etl.data_quality_log (layer, object_name, check_name, record_id, description, severity)
-    SELECT
-        'bronze',
-        'subcategory',
-        'SubCategoryID NULL',
-        CAST(ProductSubcategoryID AS NVARCHAR(200)),
-        'ProductSubcategoryID is NULL',
-        'error'
-    FROM bronze.erp_subcategory
-    WHERE ProductSubcategoryID IS NULL;
+            ---------------------------------------------------------
+            -- RULE 0: source empty -> warning
+            ---------------------------------------------------------
+            IF @rows_checked = 0
+            BEGIN
+                INSERT INTO etl.data_quality_log
+                    (batch_id, layer, object_name, check_name, record_id, description, severity)
+                VALUES
+                    (@batch_id, 'bronze', 'subcategory', 'Source empty', NULL,
+                     'bronze.erp_subcategory contains no rows', 'warning');
+            END
 
-    ---------------------------------------------------------
-    -- Check 2: ProductCategoryID NULL (FK missing)
-    ---------------------------------------------------------
-    PRINT '====================================================';
-    PRINT 'Check ProductCategoryID NULL';
-    PRINT '====================================================';
+            ---------------------------------------------------------
+            -- RULE 1: ProductSubcategoryID NULL -> error (blocking)
+            ---------------------------------------------------------
+            PRINT '-- Rule 1: ProductSubcategoryID NULL';
 
-    INSERT INTO etl.data_quality_log (layer, object_name, check_name, record_id, description, severity)
-    SELECT
-        'bronze',
-        'subcategory',
-        'CategoryID NULL',
-        CAST(ProductSubcategoryID AS NVARCHAR(200)),
-        'ProductCategoryID is NULL',
-        'error'
-    FROM bronze.erp_subcategory
-    WHERE ProductCategoryID IS NULL;
+            INSERT INTO etl.data_quality_log
+                (batch_id, layer, object_name, check_name, record_id, description, severity)
+            SELECT @batch_id, 'bronze', 'subcategory',
+                   'SubCategoryID NULL',
+                   CAST(b.ProductSubcategoryID AS NVARCHAR(200)),
+                   'ProductSubcategoryID is NULL',
+                   'error'
+            FROM bronze.erp_subcategory AS b
+            WHERE b.ProductSubcategoryID IS NULL;
 
-    ---------------------------------------------------------
-    -- Check 3: Duplicate ProductSubcategoryID
-    ---------------------------------------------------------
-    PRINT '====================================================';
-    PRINT 'Check ProductSubcategoryID duplicated';
-    PRINT '====================================================';
+            INSERT INTO etl.rejected
+                (batch_id, layer, object_name, business_key, rule_code,
+                 rule_description, severity, raw_row)
+            SELECT @batch_id, 'bronze', 'subcategory',
+                   CAST(b.ProductSubcategoryID AS NVARCHAR(200)),
+                   'NULL_BK',
+                   'Business key ProductSubcategoryID is NULL',
+                   'error',
+                   JSON_OBJECT('ProductSubcategoryID': b.ProductSubcategoryID,
+                               'ProductCategoryID': b.ProductCategoryID,
+                               'Name':              b.[Name],
+                               'rowguid':           b.rowguid,
+                               'ModifiedDate':      b.ModifiedDate
+                               NULL ON NULL)
+            FROM bronze.erp_subcategory AS b
+            WHERE b.ProductSubcategoryID IS NULL;
 
-    INSERT INTO etl.data_quality_log (layer, object_name, check_name, record_id, description, severity)
-    SELECT
-        'bronze',
-        'subcategory',
-        'Duplicate SubCategoryID',
-        CAST(ProductSubcategoryID AS NVARCHAR(200)),
-        'Duplicate ProductSubcategoryID detected',
-        'error'
-    FROM bronze.erp_subcategory
-    GROUP BY ProductSubcategoryID
-    HAVING COUNT(*) > 1;
+            ---------------------------------------------------------
+            -- RULE 2: ProductCategoryID NULL -> error (blocking)
+            ---------------------------------------------------------
+            PRINT '-- Rule 2: ProductCategoryID NULL';
 
-    ---------------------------------------------------------
-    -- Check 4: Subcategory Name NULL or empty
-    ---------------------------------------------------------
-    PRINT '====================================================';
-    PRINT 'Check Subcategory Name NULL or empty';
-    PRINT '====================================================';
+            INSERT INTO etl.data_quality_log
+                (batch_id, layer, object_name, check_name, record_id, description, severity)
+            SELECT @batch_id, 'bronze', 'subcategory',
+                   'CategoryID NULL',
+                   CAST(b.ProductSubcategoryID AS NVARCHAR(200)),
+                   'ProductCategoryID is NULL',
+                   'error'
+            FROM bronze.erp_subcategory AS b
+            WHERE b.ProductCategoryID IS NULL;
 
-    INSERT INTO etl.data_quality_log (layer, object_name, check_name, record_id, description, severity)
-    SELECT
-        'bronze',
-        'subcategory',
-        'Name NULL or empty',
-        CAST(ProductSubcategoryID AS NVARCHAR(200)),
-        'Name is NULL or empty',
-        'error'
-    FROM bronze.erp_subcategory
-    WHERE Name IS NULL
-       OR LTRIM(RTRIM(Name)) = '';
+            INSERT INTO etl.rejected
+                (batch_id, layer, object_name, business_key, rule_code,
+                 rule_description, severity, raw_row)
+            SELECT @batch_id, 'bronze', 'subcategory',
+                   CAST(b.ProductSubcategoryID AS NVARCHAR(200)),
+                   'NULL_FK',
+                   'Foreign key ProductCategoryID is NULL',
+                   'error',
+                   JSON_OBJECT('ProductSubcategoryID': b.ProductSubcategoryID,
+                               'ProductCategoryID': b.ProductCategoryID,
+                               'Name':              b.[Name],
+                               'rowguid':           b.rowguid,
+                               'ModifiedDate':      b.ModifiedDate
+                               NULL ON NULL)
+            FROM bronze.erp_subcategory AS b
+            WHERE b.ProductCategoryID IS NULL;
 
-    ---------------------------------------------------------
-    -- Count errors
-    ---------------------------------------------------------
-    DECLARE @errors INT;
+            ---------------------------------------------------------
+            -- RULE 3: Duplicate ProductSubcategoryID -> error
+            ---------------------------------------------------------
+            PRINT '-- Rule 3: Duplicate ProductSubcategoryID';
 
-    SELECT @errors = COUNT(*)
-    FROM etl.data_quality_log
-    WHERE layer = 'bronze'
-      AND object_name = 'subcategory'
-      AND severity IN ('error', 'critical');
+            INSERT INTO etl.data_quality_log
+                (batch_id, layer, object_name, check_name, record_id, description, severity)
+            SELECT @batch_id, 'bronze', 'subcategory',
+                   'Duplicate SubCategoryID',
+                   CAST(b.ProductSubcategoryID AS NVARCHAR(200)),
+                   'Duplicate ProductSubcategoryID detected: ' + CAST(COUNT(*) AS VARCHAR(10)) + ' rows',
+                   'error'
+            FROM bronze.erp_subcategory AS b
+            GROUP BY b.ProductSubcategoryID
+            HAVING COUNT(*) > 1;
 
-    PRINT '====================================================';
-    PRINT 'Number of Errors: ' + CAST(@errors AS NVARCHAR);
-    PRINT '====================================================';
+            INSERT INTO etl.rejected
+                (batch_id, layer, object_name, business_key, rule_code,
+                 rule_description, severity, raw_row)
+            SELECT @batch_id, 'bronze', 'subcategory',
+                   CAST(b.ProductSubcategoryID AS NVARCHAR(200)),
+                   'DUP_BK',
+                   'Duplicate ProductSubcategoryID detected: ' + CAST(d.cnt AS VARCHAR(10)) + ' rows',
+                   'error',
+                   JSON_OBJECT('ProductSubcategoryID': b.ProductSubcategoryID,
+                               'ProductCategoryID': b.ProductCategoryID,
+                               'Name':              b.[Name],
+                               'rowguid':           b.rowguid,
+                               'ModifiedDate':      b.ModifiedDate
+                               NULL ON NULL)
+            FROM bronze.erp_subcategory AS b
+            INNER JOIN (
+                SELECT ProductSubcategoryID, COUNT(*) AS cnt
+                FROM bronze.erp_subcategory
+                GROUP BY ProductSubcategoryID
+                HAVING COUNT(*) > 1
+            ) AS d
+                ON d.ProductSubcategoryID = b.ProductSubcategoryID;
 
-    SET @batch_end_time = GETDATE();
+            ---------------------------------------------------------
+            -- RULE 4: Name NULL or empty -> warning (NOT blocking)
+            ---------------------------------------------------------
+            PRINT '-- Rule 4: Name NULL or empty (warning)';
 
-    PRINT '========================================================================';
-    PRINT 'Data Quality Subcategory Bronze Layer Completed in ' +
-          CAST(DATEDIFF(MILLISECOND, @batch_start_time, @batch_end_time) AS NVARCHAR) +
-          ' milliseconds';
-    PRINT '========================================================================';
+            INSERT INTO etl.data_quality_log
+                (batch_id, layer, object_name, check_name, record_id, description, severity)
+            SELECT @batch_id, 'bronze', 'subcategory',
+                   'Name NULL or empty',
+                   CAST(b.ProductSubcategoryID AS NVARCHAR(200)),
+                   'Name is NULL or empty - Silver substitutes ''Unknown''',
+                   'warning'
+            FROM bronze.erp_subcategory AS b
+            WHERE b.[Name] IS NULL
+               OR LTRIM(RTRIM(b.[Name])) = '';
 
-    RETURN @errors;
+        COMMIT TRANSACTION;
+
+        ---------------------------------------------------------
+        -- Summary
+        ---------------------------------------------------------
+        SELECT @errors = COUNT(*)
+        FROM etl.data_quality_log
+        WHERE batch_id   = @batch_id
+          AND layer       = 'bronze'
+          AND object_name = 'subcategory'
+          AND severity IN ('error','critical');
+
+        SELECT @rows_rejected = COUNT(*)
+        FROM etl.rejected
+        WHERE batch_id   = @batch_id
+          AND layer       = 'bronze'
+          AND object_name = 'subcategory';
+
+        IF @rows_checked > 0
+            SET @reject_rate =
+                CAST(@rows_rejected AS DECIMAL(9,4)) * 100.0 / @rows_checked;
+
+        PRINT '>> Rows checked:  ' + CAST(@rows_checked  AS NVARCHAR(20));
+        PRINT '>> Errors logged: ' + CAST(@errors        AS NVARCHAR(20));
+        PRINT '>> Rows rejected: ' + CAST(@rows_rejected AS NVARCHAR(20)) +
+              ' (' + CAST(@reject_rate AS NVARCHAR(10)) + '%)';
+        PRINT '>> Duration: ' +
+              CAST(DATEDIFF(MILLISECOND, @batch_start_time, SYSDATETIME()) AS NVARCHAR(20)) + ' ms';
+
+        ---------------------------------------------------------
+        -- Threshold guard
+        ---------------------------------------------------------
+        IF @rows_checked > 0
+           AND @reject_rate > @max_reject_rate
+            THROW 51010, 'Rejection rate above threshold: source likely broken. Pipeline stopped on purpose.', 1;
+
+        PRINT '====================================================';
+        PRINT 'Bronze Data Quality - subcategory completed | batch: ' + CAST(@batch_id AS NVARCHAR(20));
+        PRINT '====================================================';
+
+        RETURN @errors;
+    END TRY
+
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0
+            ROLLBACK TRANSACTION;
+
+        PRINT '====================================================';
+        PRINT 'ERROR during Bronze DQ check for: subcategory';
+        PRINT 'Message: ' + ERROR_MESSAGE();
+        PRINT 'Number: '  + CAST(ERROR_NUMBER() AS NVARCHAR);
+        PRINT 'State: '   + CAST(ERROR_STATE()  AS NVARCHAR);
+        PRINT 'Line: '    + CAST(ERROR_LINE()   AS NVARCHAR);
+        PRINT '====================================================';
+
+        THROW;
+    END CATCH
 END;
 GO
