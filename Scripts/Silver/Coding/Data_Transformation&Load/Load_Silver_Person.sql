@@ -1,176 +1,345 @@
 /*
 =========================================================
-Silver Load – Person (SCD1)
+Silver Load – Person (SCD Type 1)
 =========================================================
 Purpose:
-    This stored procedure loads the Person domain into the
-    Silver layer using SCD Type 1 logic. It supports both
-    FULL and INCREMENTAL load types based on metadata stored
-    in etl.config.
+    Loads the Person dimension into Silver with SCD1 logic:
+    one row per business key, attributes overwritten in place.
+
+Load types:
+    FULL:
+        - TRUNCATE Silver
+        - RESET surrogate key sequence
+        - INSERT the entire cleaned + quarantined source
+      The dimension is rebuilt from scratch and aligned to Bronze.
+
+    INCREMENTAL:
+        - UPDATE changed rows (row_hash comparison)
+        - INSERT new business keys
+      Idempotent: a second run makes no further changes.
+
+Source rules (same hardening as Bronze DQ):
+    - Bronze already guarantees:
+         * BusinessEntityID not NULL
+         * No duplicates
+         * Standardized names (NULL/empty → warning)
+         * Quarantine of invalid rows
+    - Silver applies:
+         * TRIM normalization
+         * row_hash (SHA2-256) for change detection
+         * Exclusion of quarantined rows
+
+Flow:
+    1. Read load_type and last_watermark_value from etl.config
+    2. FULL:
+         - Build #src_full (clean + quarantine gate)
+         - TRUNCATE + RESET SEQUENCE + INSERT all rows
+    3. INCREMENTAL:
+         - Build #src_delta (ModifiedDate > watermark)
+         - UPDATE changed rows (row_hash comparison)
+         - INSERT new business keys
+         - Update watermark
+    4. Report counters
+
+Why SCD1:
+    Person is a stable master entity. Changes overwrite previous
+    values instead of generating historical versions. Only the
+    latest version of each person is kept.
+
+Deliberately not done:
+    - No delete of missing keys (SCD1 never deletes)
+    - No business logic already owned by the DQ check
+    - No use of ROW_NUMBER() or dwh_source_row_num
+      (Bronze DQ already ensures one valid row per business key)
 
 SSIS Usage:
-    This procedure is executed inside the metadata-driven
-    pipeline. SSIS reads the load_type from etl.config and
-    triggers either a full reload or an incremental update.
-    The procedure inserts cleaned Person records into
-    silver.erp_person and maintains the surrogate key sequence.
+    EXEC etl.usp_load_silver_person ?
+        param 0: batch_id (same variable used by Bronze DQ)
 
-Warning:
-    Running this procedure in FULL mode will truncate the
-    Silver table and reset the surrogate key sequence.
+Prerequisite:
+    Run 00_etl_ddl.sql first (etl.batch, etl.rejected,
+    etl.data_quality_log, sequences, Silver tables).
 */
 
-USE [DWH_AdventureWorks2025];
+
+USE [DWH_AdventureWorks2025]
+GO
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
 GO
 
-SET ANSI_NULLS ON;
-GO
-SET QUOTED_IDENTIFIER ON;
-GO
-
-CREATE OR ALTER PROCEDURE [etl].[usp_load_silver_person]
+ALTER PROCEDURE [etl].[usp_load_silver_person]
+    @batch_id BIGINT
 AS
 BEGIN
     SET NOCOUNT ON;
+    SET XACT_ABORT ON;
 
-    DECLARE @batch_start_time DATETIME,
-            @batch_end_time   DATETIME,
-            @start_time       DATETIME,
-            @end_time         DATETIME,
-            @object_name      NVARCHAR(50),
-            @load_type        NVARCHAR(20);
+    DECLARE
+        @batch_start_time DATETIME2(3) = SYSDATETIME(),
+        @start_time       DATETIME2(3),
+        @end_time         DATETIME2(3),
+        @load_ts          DATETIME2(3) = SYSDATETIME(),
+        @load_type        VARCHAR(20),
+        @last_wm          DATETIME,
+        @new_wm           DATETIME,
+        @rows_src         INT = 0,
+        @rows_updated     INT = 0,
+        @rows_inserted    INT = 0;
 
-    SET @batch_start_time = GETDATE();
-    SET @object_name = 'person';
+    BEGIN TRY
+        SET @start_time = SYSDATETIME();
 
-    PRINT '====================================================';
-    PRINT 'Retrieving configuration for object: ' + @object_name;
-    PRINT '====================================================';
-
-    ---------------------------------------------------------
-    -- Read load type from config
-    ---------------------------------------------------------
-    SELECT @load_type = load_type
-    FROM etl.config
-    WHERE object_name = @object_name
-      AND is_active = 1;
-
-    PRINT '====================================================';
-    PRINT 'Loading Silver Person';
-    PRINT '====================================================';
-
-    ---------------------------------------------------------
-    -- FULL LOAD (SCD1)
-    ---------------------------------------------------------
-    IF @load_type = 'full'
-    BEGIN
-        SET @start_time = GETDATE();
-
-        PRINT '>> FULL LOAD: Truncating silver.erp_person';
-        TRUNCATE TABLE silver.erp_person;
-
-        PRINT '>> FULL LOAD: Resetting sequence dwh.seq_silver_person';
-        ALTER SEQUENCE dwh.seq_silver_person RESTART WITH 1;
-
-        PRINT '>> FULL LOAD: Inserting all person records';
-
-        WITH clean_person AS (
-            SELECT 
-                BusinessEntityID AS person_id,
-                ROW_NUMBER() OVER (
-                    PARTITION BY BusinessEntityID 
-                    ORDER BY ModifiedDate DESC
-                ) AS flag_unique,
-                CASE
-                    WHEN MiddleName IS NULL 
-                        THEN TRIM(FirstName) + ' ' + TRIM(LastName)
-                    ELSE TRIM(FirstName) + ' ' + TRIM(MiddleName) + ' ' + TRIM(LastName)
-                END AS person_name
-            FROM bronze.erp_person
-        )
-        INSERT INTO silver.erp_person (
-            person_sk,
-            person_id,
-            person_name,
-            dwh_create_date
-        )
+        ---------------------------------------------------------
+        -- Read configuration
+        ---------------------------------------------------------
         SELECT 
-            NEXT VALUE FOR dwh.seq_silver_person OVER (ORDER BY person_id),
-            person_id,
-            person_name,
-            GETDATE()
-        FROM clean_person
-        WHERE flag_unique = 1;
+            @load_type = load_type,
+            @last_wm   = last_watermark_value
+        FROM etl.config
+        WHERE object_name = 'person'
+          AND is_active = 1;
 
-        PRINT '>> FULL LOAD completed';
-    END
+        IF @load_type IS NULL
+            THROW 51000, 'No active configuration found for PERSON.', 1;
 
-    ---------------------------------------------------------
-    -- INCREMENTAL LOAD (SCD1)
-    ---------------------------------------------------------
-    ELSE IF @load_type = 'incremental'
-    BEGIN
-        SET @start_time = GETDATE();
-        PRINT '>> INCREMENTAL LOAD (SCD1)';
+        PRINT '====================================================';
+        PRINT 'Silver Load – PERSON (SCD1) | batch: ' + CAST(@batch_id AS NVARCHAR(20));
+        PRINT 'Load type: ' + @load_type;
+        PRINT '====================================================';
 
         ---------------------------------------------------------
-        -- Source data (ERP)
+        -- FULL LOAD
         ---------------------------------------------------------
-        WITH src AS (
-            SELECT 
-                BusinessEntityID AS person_id,
-                CASE 
-                    WHEN MiddleName IS NULL 
-                        THEN TRIM(FirstName) + ' ' + TRIM(LastName)
-                    ELSE TRIM(FirstName) + ' ' + TRIM(MiddleName) + ' ' + TRIM(LastName)
-                END AS person_name,
-                ModifiedDate
-            FROM bronze.erp_person
-        )
+        IF @load_type = 'full'
+        BEGIN
+            PRINT '>> FULL load: truncate + reset sequence + reload';
+
+            BEGIN TRANSACTION;
+
+                TRUNCATE TABLE silver.erp_person;
+
+                ALTER SEQUENCE dwh.seq_silver_person RESTART WITH 1;
+
+                ---------------------------------------------------------
+                -- Build FULL source set (#src_full)
+                ---------------------------------------------------------
+                SELECT
+                    b.BusinessEntityID AS person_id,
+                    CASE
+                        WHEN TRIM(b.MiddleName) = '' OR b.MiddleName IS NULL
+                            THEN TRIM(b.FirstName) + ' ' + TRIM(b.LastName)
+                        ELSE TRIM(b.FirstName) + ' ' + TRIM(b.MiddleName) + ' ' + TRIM(b.LastName)
+                    END AS person_name,
+                    HASHBYTES('SHA2_256',
+                        CONCAT_WS('|',
+                            b.BusinessEntityID,
+                            CASE
+                                WHEN TRIM(b.MiddleName) = '' OR b.MiddleName IS NULL
+                                    THEN TRIM(b.FirstName) + ' ' + TRIM(b.LastName)
+                                ELSE TRIM(b.FirstName) + ' ' + TRIM(b.MiddleName) + ' ' + TRIM(b.LastName)
+                            END
+                        )
+                    ) AS row_hash,
+                    b.ModifiedDate
+                INTO #src_full
+                FROM bronze.erp_person b
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM etl.rejected r
+                    WHERE r.batch_id    = @batch_id
+                      AND r.layer        = 'bronze'
+                      AND r.object_name  = 'person'
+                      AND r.business_key = CAST(b.BusinessEntityID AS NVARCHAR(200))
+                );
+
+                SELECT @rows_src = COUNT(*) FROM #src_full;
+
+                PRINT '>> Source rows (FULL, after quarantine): ' + CAST(@rows_src AS NVARCHAR(20));
+
+                ---------------------------------------------------------
+                -- Insert FULL (SCD1)
+                ---------------------------------------------------------
+                INSERT INTO silver.erp_person
+                    (person_sk, person_id, person_name,
+                     row_hash, dwh_create_date, dwh_load_date, dwh_batch_id)
+                SELECT
+                    NEXT VALUE FOR dwh.seq_silver_person OVER (ORDER BY src.person_id),
+                    src.person_id,
+                    src.person_name,
+                    src.row_hash,
+                    @load_ts,
+                    @load_ts,
+                    @batch_id
+                FROM #src_full src;
+
+                SET @rows_inserted = @@ROWCOUNT;
+
+            COMMIT TRANSACTION;
+
+            DROP TABLE #src_full;
+
+            SET @end_time = SYSDATETIME();
+
+            PRINT '>> FULL load completed';
+            PRINT '>> Rows inserted: ' + CAST(@rows_inserted AS NVARCHAR(20));
+            PRINT '>> Duration: ' +
+                  CAST(DATEDIFF(MILLISECOND, @start_time, @end_time) AS NVARCHAR(20)) + ' ms';
+            PRINT '====================================================';
+
+            RETURN;
+        END
 
         ---------------------------------------------------------
-        -- 1️ UPDATE existing records that changed
+        -- INCREMENTAL LOAD (SCD1)
         ---------------------------------------------------------
-        UPDATE tgt
-        SET 
-            tgt.person_name     = src.person_name,
-            tgt.dwh_create_date = GETDATE()
-        FROM src
-        INNER JOIN silver.erp_person tgt
-            ON src.person_id = tgt.person_id
-        WHERE src.ModifiedDate > tgt.dwh_create_date;
+        ELSE IF @load_type = 'incremental'
+        BEGIN
+            PRINT '>> INCREMENTAL load (SCD1) started';
+
+            BEGIN TRANSACTION;
+
+                ---------------------------------------------------------
+                -- Build DELTA source set (#src_delta)
+                ---------------------------------------------------------
+                SELECT
+                    b.BusinessEntityID AS person_id,
+                    CASE
+                        WHEN TRIM(b.MiddleName) = '' OR b.MiddleName IS NULL
+                            THEN TRIM(b.FirstName) + ' ' + TRIM(b.LastName)
+                        ELSE TRIM(b.FirstName) + ' ' + TRIM(b.MiddleName) + ' ' + TRIM(b.LastName)
+                    END AS person_name,
+                    HASHBYTES('SHA2_256',
+                        CONCAT_WS('|',
+                            b.BusinessEntityID,
+                            CASE
+                                WHEN TRIM(b.MiddleName) = '' OR b.MiddleName IS NULL
+                                    THEN TRIM(b.FirstName) + ' ' + TRIM(b.LastName)
+                                ELSE TRIM(b.FirstName) + ' ' + TRIM(b.MiddleName) + ' ' + TRIM(b.LastName)
+                            END
+                        )
+                    ) AS row_hash,
+                    b.ModifiedDate
+                INTO #src_delta
+                FROM bronze.erp_person b
+                WHERE b.ModifiedDate > @last_wm
+                  AND NOT EXISTS (
+                        SELECT 1
+                        FROM etl.rejected r
+                        WHERE r.batch_id    = @batch_id
+                          AND r.layer        = 'bronze'
+                          AND r.object_name  = 'person'
+                          AND r.business_key = CAST(b.BusinessEntityID AS NVARCHAR(200))
+                    );
+
+                SELECT @rows_src = COUNT(*) FROM #src_delta;
+
+                PRINT '>> Delta rows (after quarantine): ' + CAST(@rows_src AS NVARCHAR(20));
+
+                IF @rows_src = 0
+                BEGIN
+                    PRINT '>> No delta found. Nothing to do.';
+                    DROP TABLE #src_delta;
+                    ROLLBACK TRANSACTION;
+
+                    SET @end_time = SYSDATETIME();
+                    PRINT '>> INCREMENTAL load completed (no changes)';
+                    PRINT '>> Duration: ' +
+                          CAST(DATEDIFF(MILLISECOND, @start_time, @end_time) AS NVARCHAR(20)) + ' ms';
+                    PRINT '====================================================';
+                    RETURN;
+                END
+
+                ---------------------------------------------------------
+                -- UPDATE changed rows
+                ---------------------------------------------------------
+                UPDATE tgt
+                SET tgt.person_name    = src.person_name,
+                    tgt.row_hash       = src.row_hash,
+                    tgt.dwh_load_date  = @load_ts,
+                    tgt.dwh_batch_id   = @batch_id
+                FROM silver.erp_person tgt
+                INNER JOIN #src_delta src
+                    ON src.person_id = tgt.person_id
+                WHERE tgt.row_hash <> src.row_hash;
+
+                SET @rows_updated = @@ROWCOUNT;
+
+                ---------------------------------------------------------
+                -- INSERT new business keys
+                ---------------------------------------------------------
+                INSERT INTO silver.erp_person
+                    (person_sk, person_id, person_name,
+                     row_hash, dwh_create_date, dwh_load_date, dwh_batch_id)
+                SELECT
+                    NEXT VALUE FOR dwh.seq_silver_person OVER (ORDER BY src.person_id),
+                    src.person_id,
+                    src.person_name,
+                    src.row_hash,
+                    @load_ts,
+                    @load_ts,
+                    @batch_id
+                FROM #src_delta src
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM silver.erp_person tgt
+                    WHERE tgt.person_id = src.person_id
+                );
+
+                SET @rows_inserted = @@ROWCOUNT;
+
+                ---------------------------------------------------------
+                -- Update watermark
+                ---------------------------------------------------------
+                SELECT @new_wm = MAX(ModifiedDate) FROM #src_delta;
+
+                UPDATE etl.config
+                SET last_watermark_value = @new_wm
+                WHERE object_name = 'person'
+                  AND is_active = 1;
+
+            COMMIT TRANSACTION;
+
+            DROP TABLE #src_delta;
+
+            SET @end_time = SYSDATETIME();
+
+            PRINT '>> INCREMENTAL load completed';
+            PRINT '>> Rows updated:  ' + CAST(@rows_updated  AS NVARCHAR(20));
+            PRINT '>> Rows inserted: ' + CAST(@rows_inserted AS NVARCHAR(20));
+            PRINT '>> Duration: ' +
+                  CAST(DATEDIFF(MILLISECOND, @start_time, @end_time) AS NVARCHAR(20)) + ' ms';
+            PRINT '====================================================';
+        END
 
         ---------------------------------------------------------
-        -- 2️ INSERT new records
+        -- Unsupported load type
         ---------------------------------------------------------
-        INSERT INTO silver.erp_person (
-            person_sk,
-            person_id,
-            person_name,
-            dwh_create_date
-        )
-        SELECT 
-            NEXT VALUE FOR dwh.seq_silver_person,
-            src.person_id,
-            src.person_name,
-            GETDATE()
-        FROM src
-        LEFT JOIN silver.erp_person tgt
-            ON src.person_id = tgt.person_id
-        WHERE tgt.person_id IS NULL;
+        ELSE
+        BEGIN
+            THROW 51020, 'Unsupported load type for PERSON.', 1;
+        END
 
-        PRINT '>> INCREMENTAL LOAD completed';
-    END
+    END TRY
 
-    ---------------------------------------------------------
-    -- End of batch
-    ---------------------------------------------------------
-    SET @batch_end_time = GETDATE();
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0
+            ROLLBACK TRANSACTION;
 
-    PRINT '====================================================';
-    PRINT 'Silver Person Load Completed in ' 
-          + CAST(DATEDIFF(SECOND, @batch_start_time, @batch_end_time) AS NVARCHAR)
-          + ' seconds';
-    PRINT '====================================================';
+        IF OBJECT_ID('tempdb..#src_full')  IS NOT NULL DROP TABLE #src_full;
+        IF OBJECT_ID('tempdb..#src_delta') IS NOT NULL DROP TABLE #src_delta;
+
+        PRINT '====================================================';
+        PRINT 'ERROR during Silver load for: person';
+        PRINT 'Message: ' + ERROR_MESSAGE();
+        PRINT 'Number: '  + CAST(ERROR_NUMBER() AS NVARCHAR);
+        PRINT 'State: '   + CAST(ERROR_STATE()  AS NVARCHAR);
+        PRINT 'Line: '    + CAST(ERROR_LINE()   AS NVARCHAR);
+        PRINT '====================================================';
+
+        THROW;
+    END CATCH
 END;
 GO
+
