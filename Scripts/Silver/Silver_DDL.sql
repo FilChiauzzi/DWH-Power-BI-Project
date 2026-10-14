@@ -149,23 +149,39 @@ CREATE TABLE silver.erp_product (
     product_name               NVARCHAR(50)   NULL,
     product_number             NVARCHAR(25)   NULL,
     make_flag                  BIT            NULL,
+    make_flag_desc             NVARCHAR(20)   NULL,       -- NEW
+
     finished_goods_flag        BIT            NULL,
+    finished_goods_flag_desc   NVARCHAR(20)   NULL,       -- NEW
+
     color                      NVARCHAR(15)   NULL,
     safety_stock_level         SMALLINT       NULL,
     reorder_point              SMALLINT       NULL,
     standard_cost              DECIMAL(19,4)  NULL,
     list_price                 DECIMAL(19,4)  NULL,
-    [size]                     NVARCHAR(5)    NULL,   -- Bronze is NVARCHAR(5):
-                                                      -- do not narrow the source
+
+    [size]                     NVARCHAR(5)    NULL,
     size_unit_measure_code     NCHAR(3)       NULL,
+    size_unit_desc             NVARCHAR(20)   NULL,       -- NEW
+
     weight_unit_measure_code   NCHAR(3)       NULL,
+    weight_unit_desc           NVARCHAR(20)   NULL,       -- NEW
+
     [weight]                   DECIMAL(10,2)  NULL,
     days_to_manufacture        INT            NULL,
-    product_line               NCHAR(2)       NULL,   -- Bronze is NCHAR(2)
+
+    product_line               NCHAR(2)       NULL,
+    product_line_desc          NVARCHAR(20)   NULL,       -- NEW
+
     [class]                    NCHAR(2)       NULL,
+    class_desc                 NVARCHAR(20)   NULL,       -- NEW
+
     style                      NCHAR(2)       NULL,
-    sell_start_date            DATE           NULL,   -- deliberate cast from the
-    sell_end_date              DATE           NULL,   -- Bronze DATETIME: date-only
+    style_desc                 NVARCHAR(20)   NULL,       -- NEW
+
+    sell_start_date            DATE           NULL,
+    sell_end_date              DATE           NULL,
+
     product_subcategory_sk     INT            NULL,
 
     -- technical columns
@@ -196,7 +212,6 @@ CREATE UNIQUE INDEX UX_silver_erp_product_active_id
 CREATE INDEX IX_silver_erp_product_subcategory_sk
     ON silver.erp_product (product_subcategory_sk);
 GO
-
 ----------------------------------------------------------
 /*
 	Silver Customer  (SCD Type 2)
