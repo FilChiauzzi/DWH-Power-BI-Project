@@ -23,373 +23,568 @@ Notes:
 USE [DWH_AdventureWorks2025];
 GO
 
-SET ANSI_NULLS ON;
-GO
-SET QUOTED_IDENTIFIER ON;
-GO
-
 CREATE OR ALTER PROCEDURE [etl].[usp_load_silver_product]
+    @batch_id BIGINT
 AS
 BEGIN
-    DECLARE @start_time DATETIME,
-            @end_time DATETIME,
-            @batch_start_time DATETIME,
-            @batch_end_time DATETIME,
-            @load_type NVARCHAR(20);
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
 
-    SET @batch_start_time = GETDATE();
+    DECLARE 
+        @start_time DATETIME2(3) = SYSDATETIME(),
+        @end_time   DATETIME2(3),
+        @load_ts    DATETIME2(3) = SYSDATETIME(),
+        @load_type  VARCHAR(20),
+        @last_wm    DATETIME,
+        @new_wm     DATETIME,
+        @rows_src   INT = 0,
+        @rows_closed INT = 0,
+        @rows_inserted INT = 0;
 
-    PRINT '====================================================';
-    PRINT 'Loading Silver Product (SCD2)';
-    PRINT '====================================================';
+    BEGIN TRY
 
-    ---------------------------------------------------------
-    -- Read load type from config
-    ---------------------------------------------------------
-    SELECT @load_type = load_type
-    FROM etl.config
-    WHERE object_name = 'product'
-      AND is_active = 1;
+        ---------------------------------------------------------
+        -- Read configuration
+        ---------------------------------------------------------
+        SELECT 
+            @load_type = load_type,
+            @last_wm   = last_watermark_value
+        FROM etl.config
+        WHERE object_name = 'product'
+          AND is_active = 1;
 
-    ---------------------------------------------------------
-    -- FULL LOAD
-    ---------------------------------------------------------
-    IF @load_type = 'full'
-    BEGIN
-        SET @start_time = GETDATE();
+        IF @load_type IS NULL
+            THROW 51000, 'No active configuration found for product.', 1;
 
-        PRINT '>> FULL LOAD: Truncating silver.erp_product';
-        TRUNCATE TABLE silver.erp_product;
+        PRINT '====================================================';
+        PRINT 'Silver Load – Product (SCD2)';
+        PRINT 'Batch: ' + CAST(@batch_id AS NVARCHAR(20));
+        PRINT 'Load type: ' + @load_type;
+        PRINT '====================================================';
 
-        PRINT '>> FULL LOAD: Resetting sequence dwh.seq_silver_product';
-        ALTER SEQUENCE dwh.seq_silver_product RESTART WITH 1;
+        ---------------------------------------------------------
+        -- FULL LOAD
+        ---------------------------------------------------------
+        IF @load_type = 'full'
+        BEGIN
+            PRINT '>> FULL LOAD STARTED';
 
-        PRINT '>> FULL LOAD: Inserting all products';
+        -----------------------------------------------------
+        -- Build #src FULL (NO watermark)
+        ----------------------------------------------------
+            ;WITH cte AS (
+                SELECT
+                    b.ProductID AS product_id,
 
-        WITH src AS (
+                    CASE WHEN b.Name IS NULL OR LTRIM(RTRIM(b.Name)) = '' 
+                         THEN 'Unknown' ELSE LTRIM(RTRIM(b.Name)) END AS product_name,
+
+                    b.ProductNumber,
+                    b.MakeFlag,
+                    b.FinishedGoodsFlag,
+
+                    CASE WHEN b.Color IS NULL OR LTRIM(RTRIM(b.Color)) = '' 
+                         THEN 'Unknown' ELSE LTRIM(RTRIM(b.Color)) END AS color,
+
+                    b.SafetyStockLevel,
+                    b.ReorderPoint,
+                    b.StandardCost,
+                    b.ListPrice,
+
+                    CASE WHEN b.Size IS NULL OR LTRIM(RTRIM(b.Size)) = '' 
+                         THEN 'N/A' ELSE LTRIM(RTRIM(b.Size)) END AS size,
+
+                    CASE WHEN b.SizeUnitMeasureCode IS NULL OR LTRIM(RTRIM(b.SizeUnitMeasureCode)) = '' 
+                         THEN 'N/A' ELSE b.SizeUnitMeasureCode END AS size_unit_measure_code,
+
+                    CASE WHEN b.WeightUnitMeasureCode IS NULL OR LTRIM(RTRIM(b.WeightUnitMeasureCode)) = '' 
+                         THEN 'N/A' ELSE b.WeightUnitMeasureCode END AS weight_unit_measure_code,
+
+                    b.Weight AS weight,
+                    b.DaysToManufacture AS days_to_manufacture,
+
+                    CASE WHEN b.ProductLine IS NULL OR LTRIM(RTRIM(b.ProductLine)) = '' 
+                         THEN 'N/A' ELSE b.ProductLine END AS product_line,
+
+                    CASE WHEN b.Class IS NULL OR LTRIM(RTRIM(b.Class)) = '' 
+                         THEN 'N/A' ELSE b.Class END AS class,
+
+                    CASE WHEN b.Style IS NULL OR LTRIM(RTRIM(b.Style)) = '' 
+                         THEN 'N/A' ELSE b.Style END AS style,
+
+                    CAST(b.SellStartDate AS DATE) AS sell_start_date,
+                    CAST(b.SellEndDate   AS DATE) AS sell_end_date,
+
+                    sc.subcategory_sk,
+
+                    -------------------------------------------------
+                    -- Descriptive columns
+                    -------------------------------------------------
+                    CASE WHEN b.MakeFlag = 1 THEN 'Manufactured'
+                         WHEN b.MakeFlag = 0 THEN 'Purchased'
+                         ELSE 'Unknown' END AS make_flag_desc,
+
+                    CASE WHEN b.FinishedGoodsFlag = 1 THEN 'Salable'
+                         WHEN b.FinishedGoodsFlag = 0 THEN 'Not salable'
+                         ELSE 'Unknown' END AS finished_goods_flag_desc,
+
+                    CASE WHEN b.ProductLine = 'R' THEN 'Road'
+                         WHEN b.ProductLine = 'M' THEN 'Mountain'
+                         WHEN b.ProductLine = 'T' THEN 'Touring'
+                         WHEN b.ProductLine = 'S' THEN 'Standard'
+                         ELSE 'Unknown' END AS product_line_desc,
+
+                    CASE WHEN b.Class = 'H' THEN 'High'
+                         WHEN b.Class = 'M' THEN 'Medium'
+                         WHEN b.Class = 'L' THEN 'Low'
+                         ELSE 'Unknown' END AS class_desc,
+
+                    CASE WHEN b.Style = 'W' THEN 'Womens'
+                         WHEN b.Style = 'M' THEN 'Mens'
+                         WHEN b.Style = 'U' THEN 'Universal'
+                         ELSE 'Unknown' END AS style_desc,
+
+                    CASE WHEN b.SizeUnitMeasureCode = 'CM' THEN 'Centimeters'
+                         WHEN b.SizeUnitMeasureCode = 'IN' THEN 'Inches'
+                         WHEN b.SizeUnitMeasureCode = 'MM' THEN 'Millimeters'
+                         ELSE 'Unknown' END AS size_unit_desc,
+
+                    CASE WHEN b.WeightUnitMeasureCode = 'KG' THEN 'Kilograms'
+                         WHEN b.WeightUnitMeasureCode = 'LB' THEN 'Pounds'
+                         ELSE 'Unknown' END AS weight_unit_desc,
+
+                    -------------------------------------------------
+                    -- Hash SCD2
+                    -------------------------------------------------
+                    HASHBYTES('SHA2_256',
+                        CONCAT_WS('|',
+                            b.ProductID,
+                            CASE WHEN b.Name IS NULL OR LTRIM(RTRIM(b.Name)) = '' 
+                                 THEN 'Unknown' ELSE LTRIM(RTRIM(b.Name)) END,
+                            b.ProductNumber,
+                            b.MakeFlag,
+                            b.FinishedGoodsFlag,
+                            CASE WHEN b.Color IS NULL OR LTRIM(RTRIM(b.Color)) = '' 
+                                 THEN 'Unknown' ELSE LTRIM(RTRIM(b.Color)) END,
+                            CASE WHEN b.Size IS NULL OR LTRIM(RTRIM(b.Size)) = '' 
+                                 THEN 'N/A' ELSE LTRIM(RTRIM(b.Size)) END,
+                            CASE WHEN b.SizeUnitMeasureCode IS NULL OR LTRIM(RTRIM(b.SizeUnitMeasureCode)) = '' 
+                                 THEN 'N/A' ELSE b.SizeUnitMeasureCode END,
+                            CASE WHEN b.WeightUnitMeasureCode IS NULL OR LTRIM(RTRIM(b.WeightUnitMeasureCode)) = '' 
+                                 THEN 'N/A' ELSE b.WeightUnitMeasureCode END,
+                            b.Weight,
+                            b.DaysToManufacture,
+                            CASE WHEN b.ProductLine IS NULL OR LTRIM(RTRIM(b.ProductLine)) = '' 
+                                 THEN 'N/A' ELSE b.ProductLine END,
+                            CASE WHEN b.Class IS NULL OR LTRIM(RTRIM(b.Class)) = '' 
+                                 THEN 'N/A' ELSE b.Class END,
+                            CASE WHEN b.Style IS NULL OR LTRIM(RTRIM(b.Style)) = '' 
+                                 THEN 'N/A' ELSE b.Style END,
+                            CAST(b.SellStartDate AS DATE),
+                            CAST(b.SellEndDate   AS DATE),
+                            sc.subcategory_sk
+                        )
+                    ) AS row_hash,
+
+                    b.ModifiedDate,
+                    b.dwh_source_row_num
+                FROM bronze.erp_product b
+                LEFT JOIN silver.erp_subcategory sc
+                    ON b.ProductSubcategoryID = sc.subcategory_id
+                WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM etl.rejected AS r
+                        WHERE r.batch_id    = @batch_id
+                          AND r.layer        = 'bronze'
+                          AND r.object_name  = 'product'
+                          AND r.business_key = CAST(b.ProductID AS NVARCHAR(200))
+                )
+            )
+            SELECT *
+            INTO #src
+            FROM cte;
+
+            SET @rows_src = @@ROWCOUNT;
+
+            BEGIN TRANSACTION;
+
+                TRUNCATE TABLE silver.erp_product;
+
+                ALTER SEQUENCE dwh.seq_silver_product RESTART WITH 1;
+
+                INSERT INTO silver.erp_product (
+                    product_sk,
+                    product_id,
+                    product_name,
+                    product_number,
+                    make_flag,
+                    make_flag_desc,
+                    finished_goods_flag,
+                    finished_goods_flag_desc,
+                    color,
+                    safety_stock_level,
+                    reorder_point,
+                    standard_cost,
+                    list_price,
+                    size,
+                    size_unit_measure_code,
+                    size_unit_desc,
+                    weight_unit_measure_code,
+                    weight_unit_desc,
+                    weight,
+                    days_to_manufacture,
+                    product_line,
+                    product_line_desc,
+                    class,
+                    class_desc,
+                    style,
+                    style_desc,
+                    sell_start_date,
+                    sell_end_date,
+                    product_subcategory_sk,
+                    row_hash,
+                    dwh_create_date,
+                    dwh_start_date,
+                    dwh_end_date,
+                    is_active,
+                    dwh_load_date,
+                    dwh_batch_id
+                )
+                SELECT
+                    NEXT VALUE FOR dwh.seq_silver_product OVER (ORDER BY src.product_id),
+                    src.product_id,
+                    src.product_name,
+                    src.ProductNumber,
+                    src.MakeFlag,
+                    src.make_flag_desc,
+                    src.FinishedGoodsFlag,
+                    src.finished_goods_flag_desc,
+                    src.color,
+                    src.SafetyStockLevel,
+                    src.ReorderPoint,
+                    src.StandardCost,
+                    src.ListPrice,
+                    src.size,
+                    src.size_unit_measure_code,
+                    src.size_unit_desc,
+                    src.weight_unit_measure_code,
+                    src.weight_unit_desc,
+                    src.weight,
+                    src.days_to_manufacture,
+                    src.product_line,
+                    src.product_line_desc,
+                    src.class,
+                    src.class_desc,
+                    src.style,
+                    src.style_desc,
+                    src.sell_start_date,
+                    src.sell_end_date,
+                    src.subcategory_sk,
+                    src.row_hash,
+                    @load_ts,
+                    @load_ts,
+                    DATEFROMPARTS(9999,12,31),
+                    1,
+                    @load_ts,
+                    @batch_id
+                FROM #src src;
+
+            COMMIT TRANSACTION;
+
+            DROP TABLE #src;
+
+            PRINT '>> FULL load completed';
+            RETURN;
+        ---------------------------------------------------------
+        -- Build #src: DELTA Bronze + exclude rejected
+        ---------------------------------------------------------
+        IF @load_type = 'incremental'
+        BEGIN
+        PRINT '>> INCREMENTAL LOAD STARTED';
+        ;WITH cte AS (
             SELECT
-                p.ProductID AS product_id,
-                CASE WHEN p.Name IS NULL OR LTRIM(RTRIM(p.Name)) = '' 
-                     THEN 'Unknown' 
-                     ELSE LTRIM(RTRIM(p.Name)) END AS product_name,
-                p.ProductNumber AS product_number,
-                p.MakeFlag AS make_flag,
-                p.FinishedGoodsFlag AS finished_goods_flag,
-                CASE WHEN p.Color IS NULL OR LTRIM(RTRIM(p.Color)) = '' 
-                     THEN 'Unknown' 
-                     ELSE LTRIM(RTRIM(p.Color)) END AS color,
-                p.SafetyStockLevel AS safety_stock_level,
-                p.ReorderPoint AS reorder_point,
-                p.StandardCost AS standard_cost,
-                p.ListPrice AS list_price,
-                CASE WHEN p.Size IS NULL OR LTRIM(RTRIM(p.Size)) = '' 
-                     THEN 'N/A' 
-                     ELSE LTRIM(RTRIM(p.Size)) END AS size,
-                CASE WHEN p.SizeUnitMeasureCode IS NULL OR LTRIM(RTRIM(p.SizeUnitMeasureCode)) = '' 
-                     THEN 'N/A' 
-                     ELSE p.SizeUnitMeasureCode END AS size_unit_measure_code,
-                CASE WHEN p.WeightUnitMeasureCode IS NULL OR LTRIM(RTRIM(p.WeightUnitMeasureCode)) = '' 
-                     THEN 'N/A' 
-                     ELSE p.WeightUnitMeasureCode END AS weight_unit_measure_code,
-                p.Weight AS weight,
-                p.DaysToManufacture AS days_to_manufacture,
-                CASE WHEN p.ProductLine IS NULL OR LTRIM(RTRIM(p.ProductLine)) = '' 
-                     THEN 'N/A' 
-                     ELSE p.ProductLine END AS product_line,
-                CASE WHEN p.Class IS NULL OR LTRIM(RTRIM(p.Class)) = '' 
-                     THEN 'N/A' 
-                     ELSE p.Class END AS class,
-                CASE WHEN p.Style IS NULL OR LTRIM(RTRIM(p.Style)) = '' 
-                     THEN 'N/A' 
-                     ELSE p.Style END AS style,
-                CAST(p.SellStartDate AS DATE) AS sell_start_date,
-                CAST(p.SellEndDate AS DATE) AS sell_end_date,
-                ISNULL(sc.subcategory_sk, -1) AS product_subcategory_sk,
+                b.ProductID AS product_id,
 
+                CASE WHEN b.Name IS NULL OR LTRIM(RTRIM(b.Name)) = '' 
+                     THEN 'Unknown' ELSE LTRIM(RTRIM(b.Name)) END AS product_name,
+
+                b.ProductNumber,
+                b.MakeFlag,
+                b.FinishedGoodsFlag,
+
+                CASE WHEN b.Color IS NULL OR LTRIM(RTRIM(b.Color)) = '' 
+                     THEN 'Unknown' ELSE LTRIM(RTRIM(b.Color)) END AS color,
+
+                b.SafetyStockLevel,
+                b.ReorderPoint,
+                b.StandardCost,
+                b.ListPrice,
+
+                CASE WHEN b.Size IS NULL OR LTRIM(RTRIM(b.Size)) = '' 
+                     THEN 'N/A' ELSE LTRIM(RTRIM(b.Size)) END AS size,
+
+                CASE WHEN b.SizeUnitMeasureCode IS NULL OR LTRIM(RTRIM(b.SizeUnitMeasureCode)) = '' 
+                     THEN 'N/A' ELSE b.SizeUnitMeasureCode END AS size_unit_measure_code,
+
+                CASE WHEN b.WeightUnitMeasureCode IS NULL OR LTRIM(RTRIM(b.WeightUnitMeasureCode)) = '' 
+                     THEN 'N/A' ELSE b.WeightUnitMeasureCode END AS weight_unit_measure_code,
+
+                b.Weight AS weight,
+                b.DaysToManufacture AS days_to_manufacture,
+
+                CASE WHEN b.ProductLine IS NULL OR LTRIM(RTRIM(b.ProductLine)) = '' 
+                     THEN 'N/A' ELSE b.ProductLine END AS product_line,
+
+                CASE WHEN b.Class IS NULL OR LTRIM(RTRIM(b.Class)) = '' 
+                     THEN 'N/A' ELSE b.Class END AS class,
+
+                CASE WHEN b.Style IS NULL OR LTRIM(RTRIM(b.Style)) = '' 
+                     THEN 'N/A' ELSE b.Style END AS style,
+
+                CAST(b.SellStartDate AS DATE) AS sell_start_date,
+                CAST(b.SellEndDate   AS DATE) AS sell_end_date,
+
+                sc.subcategory_sk,
+
+                -------------------------------------------------
+                -- Descriptive columns
+                -------------------------------------------------
+                CASE WHEN b.MakeFlag = 1 THEN 'Manufactured'
+                     WHEN b.MakeFlag = 0 THEN 'Purchased'
+                     ELSE 'Unknown' END AS make_flag_desc,
+
+                CASE WHEN b.FinishedGoodsFlag = 1 THEN 'Salable'
+                     WHEN b.FinishedGoodsFlag = 0 THEN 'Not salable'
+                     ELSE 'Unknown' END AS finished_goods_flag_desc,
+
+                CASE WHEN b.ProductLine = 'R' THEN 'Road'
+                     WHEN b.ProductLine = 'M' THEN 'Mountain'
+                     WHEN b.ProductLine = 'T' THEN 'Touring'
+                     WHEN b.ProductLine = 'S' THEN 'Standard'
+                     ELSE 'Unknown' END AS product_line_desc,
+
+                CASE WHEN b.Class = 'H' THEN 'High'
+                     WHEN b.Class = 'M' THEN 'Medium'
+                     WHEN b.Class = 'L' THEN 'Low'
+                     ELSE 'Unknown' END AS class_desc,
+
+                CASE WHEN b.Style = 'W' THEN 'Womens'
+                     WHEN b.Style = 'M' THEN 'Mens'
+                     WHEN b.Style = 'U' THEN 'Universal'
+                     ELSE 'Unknown' END AS style_desc,
+
+                CASE WHEN b.SizeUnitMeasureCode = 'CM' THEN 'Centimeters'
+                     WHEN b.SizeUnitMeasureCode = 'IN' THEN 'Inches'
+                     WHEN b.SizeUnitMeasureCode = 'MM' THEN 'Millimeters'
+                     ELSE 'Unknown' END AS size_unit_desc,
+
+                CASE WHEN b.WeightUnitMeasureCode = 'KG' THEN 'Kilograms'
+                     WHEN b.WeightUnitMeasureCode = 'LB' THEN 'Pounds'
+                     ELSE 'Unknown' END AS weight_unit_desc,
+
+                -------------------------------------------------
+                -- Hash SCD2
+                -------------------------------------------------
                 HASHBYTES('SHA2_256',
                     CONCAT_WS('|',
-                        CASE WHEN p.Name IS NULL OR LTRIM(RTRIM(p.Name)) = '' 
-                             THEN 'Unknown' 
-                             ELSE LTRIM(RTRIM(p.Name)) END,
-                        p.ProductNumber,
-                        p.MakeFlag,
-                        p.FinishedGoodsFlag,
-                        CASE WHEN p.Color IS NULL OR LTRIM(RTRIM(p.Color)) = '' 
-                             THEN 'Unknown' 
-                             ELSE LTRIM(RTRIM(p.Color)) END,
-                        CASE WHEN p.Size IS NULL OR LTRIM(RTRIM(p.Size)) = '' 
-                             THEN 'N/A' 
-                             ELSE LTRIM(RTRIM(p.Size)) END,
-                        CASE WHEN p.SizeUnitMeasureCode IS NULL OR LTRIM(RTRIM(p.SizeUnitMeasureCode)) = '' 
-                             THEN 'N/A' 
-                             ELSE p.SizeUnitMeasureCode END,
-                        CASE WHEN p.WeightUnitMeasureCode IS NULL OR LTRIM(RTRIM(p.WeightUnitMeasureCode)) = '' 
-                             THEN 'N/A' 
-                             ELSE p.WeightUnitMeasureCode END,
-                        p.Weight,
-                        p.DaysToManufacture,
-                        CASE WHEN p.ProductLine IS NULL OR LTRIM(RTRIM(p.ProductLine)) = '' 
-                             THEN 'N/A' 
-                             ELSE p.ProductLine END,
-                        CASE WHEN p.Class IS NULL OR LTRIM(RTRIM(p.Class)) = '' 
-                             THEN 'N/A' 
-                             ELSE p.Class END,
-                        CASE WHEN p.Style IS NULL OR LTRIM(RTRIM(p.Style)) = '' 
-                             THEN 'N/A' 
-                             ELSE p.Style END,
-                        CAST(p.SellStartDate AS DATE),
-                        CAST(p.SellEndDate AS DATE)
+                        b.ProductID,
+                        CASE WHEN b.Name IS NULL OR LTRIM(RTRIM(b.Name)) = '' 
+                             THEN 'Unknown' ELSE LTRIM(RTRIM(b.Name)) END,
+                        b.ProductNumber,
+                        b.MakeFlag,
+                        b.FinishedGoodsFlag,
+                        CASE WHEN b.Color IS NULL OR LTRIM(RTRIM(b.Color)) = '' 
+                             THEN 'Unknown' ELSE LTRIM(RTRIM(b.Color)) END,
+                        CASE WHEN b.Size IS NULL OR LTRIM(RTRIM(b.Size)) = '' 
+                             THEN 'N/A' ELSE LTRIM(RTRIM(b.Size)) END,
+                        CASE WHEN b.SizeUnitMeasureCode IS NULL OR LTRIM(RTRIM(b.SizeUnitMeasureCode)) = '' 
+                             THEN 'N/A' ELSE b.SizeUnitMeasureCode END,
+                        CASE WHEN b.WeightUnitMeasureCode IS NULL OR LTRIM(RTRIM(b.WeightUnitMeasureCode)) = '' 
+                             THEN 'N/A' ELSE b.WeightUnitMeasureCode END,
+                        b.Weight,
+                        b.DaysToManufacture,
+                        CASE WHEN b.ProductLine IS NULL OR LTRIM(RTRIM(b.ProductLine)) = '' 
+                             THEN 'N/A' ELSE b.ProductLine END,
+                        CASE WHEN b.Class IS NULL OR LTRIM(RTRIM(b.Class)) = '' 
+                             THEN 'N/A' ELSE b.Class END,
+                        CASE WHEN b.Style IS NULL OR LTRIM(RTRIM(b.Style)) = '' 
+                             THEN 'N/A' ELSE b.Style END,
+                        CAST(b.SellStartDate AS DATE),
+                        CAST(b.SellEndDate   AS DATE),
+                        sc.subcategory_sk
                     )
                 ) AS row_hash,
-                ROW_NUMBER() OVER (
-                    PARTITION BY p.ProductID
-                    ORDER BY p.ModifiedDate DESC
-                ) AS flag_unique
-            FROM bronze.erp_product p
+
+                b.ModifiedDate,
+                b.dwh_source_row_num
+            FROM bronze.erp_product b
             LEFT JOIN silver.erp_subcategory sc
-                ON p.ProductSubcategoryID = sc.subcategory_id
+                ON b.ProductSubcategoryID = sc.subcategory_id
+            WHERE b.ModifiedDate > @last_wm
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM etl.rejected AS r
+                    WHERE r.batch_id    = @batch_id
+                      AND r.layer        = 'bronze'
+                      AND r.object_name  = 'product'
+                      AND r.business_key = CAST(b.ProductID AS NVARCHAR(200))
+              )
         )
+        SELECT *
+        INTO #src
+        FROM cte;
 
-        INSERT INTO silver.erp_product (
-            product_sk,
-            product_id,
-            product_name,
-            product_number,
-            make_flag,
-            finished_goods_flag,
-            color,
-            safety_stock_level,
-            reorder_point,
-            standard_cost,
-            list_price,
-            size,
-            size_unit_measure_code,
-            weight_unit_measure_code,
-            weight,
-            days_to_manufacture,
-            product_line,
-            class,
-            style,
-            sell_start_date,
-            sell_end_date,
-            row_hash,
-            dwh_start_date,
-            dwh_end_date,
-            is_active,
-            product_subcategory_sk
-        )
-        SELECT
-            NEXT VALUE FOR dwh.seq_silver_product OVER (ORDER BY product_id),
-            product_id,
-            product_name,
-            product_number,
-            make_flag,
-            finished_goods_flag,
-            color,
-            safety_stock_level,
-            reorder_point,
-            standard_cost,
-            list_price,
-            size,
-            size_unit_measure_code,
-            weight_unit_measure_code,
-            weight,
-            days_to_manufacture,
-            product_line,
-            class,
-            style,
-            sell_start_date,
-            sell_end_date,
-            row_hash,
-            GETDATE(),
-            CAST('31-12-9999' AS DATETIME),
-            1,
-            product_subcategory_sk
-        FROM src
-        WHERE flag_unique = 1;
-    END
+        SET @rows_src = @@ROWCOUNT;
+        PRINT '>> Delta rows from Bronze (valid): ' + CAST(@rows_src AS NVARCHAR(20));
 
-    ---------------------------------------------------------
-    -- INCREMENTAL LOAD (SCD2)
-    ---------------------------------------------------------
-    ELSE IF @load_type = 'incremental'
-    BEGIN
-        SET @start_time = GETDATE();
-        PRINT '>> INCREMENTAL LOAD (SCD2)';
+        IF @rows_src = 0
+        BEGIN
+            PRINT '>> No delta found. Nothing to do.';
+            RETURN;
+        END
 
-        WITH src AS (
+        ---------------------------------------------------------
+        -- Compute new watermark
+        ---------------------------------------------------------
+        SELECT @new_wm = MAX(ModifiedDate) FROM #src;
+
+        ---------------------------------------------------------
+        -- INCREMENTAL LOAD (SCD2)
+        ---------------------------------------------------------
+        BEGIN TRANSACTION;
+
+            -----------------------------------------------------
+            -- Close previous versions
+            -----------------------------------------------------
+            UPDATE tgt
+            SET tgt.dwh_end_date  = @load_ts,
+                tgt.is_active     = 0,
+                tgt.dwh_load_date = @load_ts,
+                tgt.dwh_batch_id  = @batch_id
+            FROM silver.erp_product tgt
+            JOIN #src src
+                ON tgt.product_id = src.product_id
+            WHERE tgt.is_active = 1
+              AND tgt.row_hash <> src.row_hash;
+
+            SET @rows_closed = @@ROWCOUNT;
+
+            -----------------------------------------------------
+            -- Insert new versions
+            -----------------------------------------------------
+            INSERT INTO silver.erp_product (
+                product_sk,
+                product_id,
+                product_name,
+                product_number,
+                make_flag,
+                make_flag_desc,
+                finished_goods_flag,
+                finished_goods_flag_desc,
+                color,
+                safety_stock_level,
+                reorder_point,
+                standard_cost,
+                list_price,
+                size,
+                size_unit_measure_code,
+                size_unit_desc,
+                weight_unit_measure_code,
+                weight_unit_desc,
+                weight,
+                days_to_manufacture,
+                product_line,
+                product_line_desc,
+                class,
+                class_desc,
+                style,
+                style_desc,
+                sell_start_date,
+                sell_end_date,
+                product_subcategory_sk,
+                row_hash,
+                dwh_create_date,
+                dwh_start_date,
+                dwh_end_date,
+                is_active,
+                dwh_load_date,
+                dwh_batch_id
+            )
             SELECT
-                p.ProductID AS product_id,
-                CASE WHEN p.Name IS NULL OR LTRIM(RTRIM(p.Name)) = '' 
-                     THEN 'Unknown' 
-                     ELSE LTRIM(RTRIM(p.Name)) END AS product_name,
-                p.ProductNumber AS product_number,
-                p.MakeFlag AS make_flag,
-                p.FinishedGoodsFlag AS finished_goods_flag,
-                CASE WHEN p.Color IS NULL OR LTRIM(RTRIM(p.Color)) = '' 
-                     THEN 'Unknown' 
-                     ELSE LTRIM(RTRIM(p.Color)) END AS color,
-                p.SafetyStockLevel AS safety_stock_level,
-                p.ReorderPoint AS reorder_point,
-                p.StandardCost AS standard_cost,
-                p.ListPrice AS list_price,
-                CASE WHEN p.Size IS NULL OR LTRIM(RTRIM(p.Size)) = '' 
-                     THEN 'N/A' 
-                     ELSE LTRIM(RTRIM(p.Size)) END AS size,
-                CASE WHEN p.SizeUnitMeasureCode IS NULL OR LTRIM(RTRIM(p.SizeUnitMeasureCode)) = '' 
-                     THEN 'N/A' 
-                     ELSE p.SizeUnitMeasureCode END AS size_unit_measure_code,
-                CASE WHEN p.WeightUnitMeasureCode IS NULL OR LTRIM(RTRIM(p.WeightUnitMeasureCode)) = '' 
-                     THEN 'N/A' 
-                     ELSE p.WeightUnitMeasureCode END AS weight_unit_measure_code,
-                p.Weight AS weight,
-                p.DaysToManufacture AS days_to_manufacture,
-                CASE WHEN p.ProductLine IS NULL OR LTRIM(RTRIM(p.ProductLine)) = '' 
-                     THEN 'N/A' 
-                     ELSE p.ProductLine END AS product_line,
-                CASE WHEN p.Class IS NULL OR LTRIM(RTRIM(p.Class)) = '' 
-                     THEN 'N/A' 
-                     ELSE p.Class END AS class,
-                CASE WHEN p.Style IS NULL OR LTRIM(RTRIM(p.Style)) = '' 
-                     THEN 'N/A' 
-                     ELSE p.Style END AS style,
-                CAST(p.SellStartDate AS DATE) AS sell_start_date,
-                CAST(p.SellEndDate AS DATE) AS sell_end_date,
-                ISNULL(sc.subcategory_sk, -1) AS product_subcategory_sk,
-                HASHBYTES('SHA2_256',
-                    CONCAT_WS('|',
-                        CASE WHEN p.Name IS NULL OR LTRIM(RTRIM(p.Name)) = '' 
-                             THEN 'Unknown' 
-                             ELSE LTRIM(RTRIM(p.Name)) END,
-                        p.ProductNumber,
-                        p.MakeFlag,
-                        p.FinishedGoodsFlag,
-                        CASE WHEN p.Color IS NULL OR LTRIM(RTRIM(p.Color)) = '' 
-                             THEN 'Unknown' 
-                             ELSE LTRIM(RTRIM(p.Color)) END,
-                        CASE WHEN p.Size IS NULL OR LTRIM(RTRIM(p.Size)) = '' 
-                             THEN 'N/A' 
-                             ELSE LTRIM(RTRIM(p.Size)) END,
-                        CASE WHEN p.SizeUnitMeasureCode IS NULL OR LTRIM(RTRIM(p.SizeUnitMeasureCode)) = '' 
-                             THEN 'N/A' 
-                             ELSE p.SizeUnitMeasureCode END,
-                        CASE WHEN p.WeightUnitMeasureCode IS NULL OR LTRIM(RTRIM(p.WeightUnitMeasureCode)) = '' 
-                             THEN 'N/A' 
-                             ELSE p.WeightUnitMeasureCode END,
-                        p.Weight,
-                        p.DaysToManufacture,
-                        CASE WHEN p.ProductLine IS NULL OR LTRIM(RTRIM(p.ProductLine)) = '' 
-                             THEN 'N/A' 
-                             ELSE p.ProductLine END,
-                        CASE WHEN p.Class IS NULL OR LTRIM(RTRIM(p.Class)) = '' 
-                             THEN 'N/A' 
-                             ELSE p.Class END,
-                        CASE WHEN p.Style IS NULL OR LTRIM(RTRIM(p.Style)) = '' 
-                             THEN 'N/A' 
-                             ELSE p.Style END,
-                        CAST(p.SellStartDate AS DATE),
-                        CAST(p.SellEndDate AS DATE)
-                    )
-                ) AS row_hash,
+                NEXT VALUE FOR dwh.seq_silver_product OVER (ORDER BY src.product_id),
+                src.product_id,
+                src.product_name,
+                src.ProductNumber,
+                src.MakeFlag,
+                src.make_flag_desc,
+                src.FinishedGoodsFlag,
+                src.finished_goods_flag_desc,
+                src.color,
+                src.SafetyStockLevel,
+                src.ReorderPoint,
+                src.StandardCost,
+                src.ListPrice,
+                src.size,
+                src.size_unit_measure_code,
+                src.size_unit_desc,
+                src.weight_unit_measure_code,
+                src.weight_unit_desc,
+                src.weight,
+                src.days_to_manufacture,
+                src.product_line,
+                src.product_line_desc,
+                src.class,
+                src.class_desc,
+                src.style,
+                src.style_desc,
+                src.sell_start_date,
+                src.sell_end_date,
+                src.subcategory_sk,
+                src.row_hash,
+                @load_ts,
+                @load_ts,
+                DATEFROMPARTS(9999,12,31),
+                1,
+                @load_ts,
+                @batch_id
+            FROM #src src;
 
-                ROW_NUMBER() OVER (
-                    PARTITION BY p.ProductID
-                    ORDER BY p.rowguid DESC
-                ) AS flag_unique
-            FROM bronze.erp_product p
-            LEFT JOIN silver.erp_subcategory sc
-                ON p.ProductSubcategoryID = sc.subcategory_id
-        )
+            SET @rows_inserted = @@ROWCOUNT;
+            
+            DROP TABLE #src;
 
-        ------------------------------------------------------------
-        -- Close previous versions (SCD2)
-        ------------------------------------------------------------
-        UPDATE tgt
-        SET 
-            tgt.dwh_end_date = GETDATE(),
-            tgt.is_active = 0
-        FROM silver.erp_product tgt
-        JOIN src
-            ON tgt.product_id = src.product_id
-        WHERE tgt.is_active = 1
-          AND tgt.row_hash <> src.row_hash
-          AND src.flag_unique = 1;
+        COMMIT TRANSACTION;
 
-        ------------------------------------------------------------
-        -- Insert new versions (SCD2)
-        ------------------------------------------------------------
-        INSERT INTO silver.erp_product (
-            product_sk,
-            product_id,
-            product_name,
-            product_number,
-            make_flag,
-            finished_goods_flag,
-            color,
-            safety_stock_level,
-            reorder_point,
-            standard_cost,
-            list_price,
-            size,
-            size_unit_measure_code,
-            weight_unit_measure_code,
-            weight,
-            days_to_manufacture,
-            product_line,
-            class,
-            style,
-            sell_start_date,
-            sell_end_date,
-            row_hash,
-            dwh_start_date,
-            dwh_end_date,
-            is_active,
-            product_subcategory_sk
-        )
-        SELECT
-            NEXT VALUE FOR dwh.seq_silver_product OVER (ORDER BY src.product_id),
-            src.product_id,
-            src.product_name,
-            src.product_number,
-            src.make_flag,
-            src.finished_goods_flag,
-            src.color,
-            src.safety_stock_level,
-            src.reorder_point,
-            src.standard_cost,
-            src.list_price,
-            src.size,
-            src.size_unit_measure_code,
-            src.weight_unit_measure_code,
-            src.weight,
-            src.days_to_manufacture,
-            src.product_line,
-            src.class,
-            src.style,
-            src.sell_start_date,
-            src.sell_end_date,
-            src.row_hash,
-            GETDATE(),
-            CAST('31-12-9999' AS DATETIME),
-            1,
-            src.product_subcategory_sk
-        FROM src
-        LEFT JOIN silver.erp_product tgt
-            ON src.product_id = tgt.product_id
-            AND tgt.is_active = 1
-        WHERE src.flag_unique = 1
-          AND (tgt.product_id IS NULL OR tgt.row_hash <> src.row_hash);
-    END
+        ---------------------------------------------------------
+        -- Update watermark
+        ---------------------------------------------------------
+        UPDATE etl.config
+        SET last_watermark_value = @new_wm
+        WHERE object_name = 'product';
 
-    ------------------------------------------------------------
-    -- Logging
-    ------------------------------------------------------------
-    SET @end_time = GETDATE();
-    PRINT '>> Load Duration: '+ CAST(DATEDIFF(MILLISECOND, @start_time, @end_time) AS NVARCHAR) + ' ms';
+        SET @end_time = SYSDATETIME();
 
-    SET @batch_end_time = GETDATE();
-    PRINT '====================================================';
-    PRINT 'Loading Silver Product Completed: ' + CAST(DATEDIFF(MILLISECOND, @batch_start_time, @batch_end_time) AS NVARCHAR) + ' ms';
-    PRINT '====================================================';
+        PRINT '>> Rows closed:   ' + CAST(@rows_closed AS NVARCHAR(20));
+        PRINT '>> Rows inserted: ' + CAST(@rows_inserted AS NVARCHAR(20));
+        PRINT '>> Duration: ' +
+              CAST(DATEDIFF(MILLISECOND, @start_time, @end_time) AS NVARCHAR(20)) + ' ms';
+        PRINT '====================================================';
+        END
+    END TRY
+
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0
+            ROLLBACK TRANSACTION;
+
+        IF OBJECT_ID('tempdb..#src') IS NOT NULL
+            DROP TABLE #src;
+
+        PRINT '====================================================';
+        PRINT 'ERROR during Silver load for product';
+        PRINT ERROR_MESSAGE();
+        PRINT '====================================================';
+
+        THROW;
+    END CATCH
 END;
 GO
