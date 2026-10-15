@@ -332,7 +332,60 @@ CREATE TABLE bronze.erp_ship_method(
 
 CREATE CLUSTERED COLUMNSTORE INDEX cci_erp_ship_method ON bronze.erp_ship_method;
 GO
-	
+
+----------------------------------------------------------
+/*
+	Bronze Person Address
+*/
+---------------------------------------------------------
+IF OBJECT_ID ('bronze.erp_person_address', 'U') IS NOT NULL 
+	DROP TABLE bronze.erp_person_address;
+
+CREATE TABLE bronze.erp_person_address(
+	[AddressID] INT NULL,
+	[AddressLine1] [nvarchar](60)  NULL,
+	[AddressLine2] [nvarchar](60) NULL,
+	[City] [nvarchar](30)  NULL,
+	[StateProvinceID] [int]  NULL,
+	[PostalCode] [nvarchar](15)  NULL,
+	[SpatialLocation] [geography] NULL,
+	[rowguid] [uniqueidentifier]   NULL,
+	[ModifiedDate] [datetime]  NULL,
+
+	dwh_load_date DATETIME2(3) NOT NULL DEFAULT SYSDATETIME(),
+	dwh_batch_id BIGINT NULL,
+	dwh_source_row_num BIGINT NULL
+);
+
+CREATE CLUSTERED COLUMNSTORE INDEX cci_erp_person_address ON bronze.erp_person_address;
+GO
+
+----------------------------------------------------------
+/*
+	Bronze Person State Province
+*/
+---------------------------------------------------------
+IF OBJECT_ID ('bronze.erp_state_province', 'U') IS NOT NULL 
+	DROP TABLE bronze.erp_state_province;
+
+CREATE TABLE bronze.erp_state_province(
+	[StateProvinceID] [int]  NULL,
+	[StateProvinceCode] [nchar](3)  NULL,
+	[CountryRegionCode] [nvarchar](3)  NULL,
+	[IsOnlyStateProvinceFlag] [dbo].[Flag]  NULL,
+	[Name] [dbo].[Name] NULL,
+	[TerritoryID] [int] NULL,
+	[rowguid] [uniqueidentifier] ROWGUIDCOL  NULL,
+	[ModifiedDate] [datetime] NULL,
+
+	dwh_load_date DATETIME2(3) NOT NULL DEFAULT SYSDATETIME(),
+	dwh_batch_id BIGINT NULL,
+	dwh_source_row_num BIGINT NULL
+);
+
+CREATE CLUSTERED COLUMNSTORE INDEX cci_erp_state_province ON bronze.erp_state_province;
+GO
+
 ----------------------------------------------------------
 /*
 	Bronze Sales Order Header
