@@ -45,7 +45,14 @@ Warning:
     successfully before executing this load.
 */
 
-CREATE OR ALTER PROCEDURE [etl].[usp_load_silver_person_address]
+USE [DWH_AdventureWorks2025]
+GO
+/****** Oggetto: StoredProcedure [etl].[usp_load_silver_person_address]    Data dello script 15/10/2026 19:34:38 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER   PROCEDURE [etl].[usp_load_silver_person_address]
     @batch_id BIGINT
 AS
 BEGIN
@@ -94,7 +101,7 @@ BEGIN
 
             BEGIN TRANSACTION;
 
-                TRUNCATE TABLE silver.person_address;
+                TRUNCATE TABLE silver.erp_person_address;
 
                 ALTER SEQUENCE dwh.seq_silver_person_address RESTART WITH 1;
 
@@ -176,10 +183,10 @@ BEGIN
                 ---------------------------------------------------------
                 -- Insert FULL (SCD1)
                 ---------------------------------------------------------
-                INSERT INTO silver.person_address
+                INSERT INTO silver.erp_person_address
                     (address_sk, address_id,
                      address_line1, address_line2, city,
-                     state_province_id, postal_code,
+                     state_province_id, state_province_sk,postal_code,
                      latitude, longitude,
                      row_hash, dwh_create_date, dwh_load_date, dwh_batch_id)
                 SELECT
@@ -189,6 +196,7 @@ BEGIN
                     src.address_line2,
                     src.city,
                     src.state_province_id,
+                    pr.state_province_sk,
                     src.postal_code,
                     src.latitude,
                     src.longitude,
@@ -196,7 +204,9 @@ BEGIN
                     @load_ts,
                     @load_ts,
                     @batch_id
-                FROM #src_full AS src;
+                FROM #src_full AS src
+                LEFT JOIN silver.erp_state_province pr
+                    ON src.state_province_id = pr.state_province_id;
 
                 SET @rows_inserted = @@ROWCOUNT;
 
@@ -328,7 +338,7 @@ BEGIN
                     tgt.row_hash          = src.row_hash,
                     tgt.dwh_load_date     = @load_ts,
                     tgt.dwh_batch_id      = @batch_id
-                FROM silver.person_address AS tgt
+                FROM silver.erp_person_address AS tgt
                 INNER JOIN #src_delta AS src
                     ON src.address_id = tgt.address_id
                 WHERE tgt.row_hash <> src.row_hash;
@@ -338,10 +348,10 @@ BEGIN
                 ---------------------------------------------------------
                 -- INSERT new business keys
                 ---------------------------------------------------------
-                INSERT INTO silver.person_address
+                INSERT INTO silver.erp_person_address
                     (address_sk, address_id,
                      address_line1, address_line2, city,
-                     state_province_id, postal_code,
+                     state_province_id, state_province_sk,postal_code,
                      latitude, longitude,
                      row_hash, dwh_create_date, dwh_load_date, dwh_batch_id)
                 SELECT
@@ -351,6 +361,7 @@ BEGIN
                     src.address_line2,
                     src.city,
                     src.state_province_id,
+                    pr.state_province_sk,
                     src.postal_code,
                     src.latitude,
                     src.longitude,
@@ -359,9 +370,11 @@ BEGIN
                     @load_ts,
                     @batch_id
                 FROM #src_delta AS src
+                LEFT JOIN silver.erp_state_province pr
+                    ON src.state_province_id = pr.state_province_id
                 WHERE NOT EXISTS (
                     SELECT 1
-                    FROM silver.person_address AS tgt
+                    FROM silver.erp_person_address AS tgt
                     WHERE tgt.address_id = src.address_id
                 );
 
@@ -419,4 +432,3 @@ BEGIN
         THROW;
     END CATCH
 END;
-GO
