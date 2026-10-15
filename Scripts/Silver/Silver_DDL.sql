@@ -418,6 +418,47 @@ GO
 
 ----------------------------------------------------------
 /*
+    Silver Employee  (SCD Type 1)
+*/
+----------------------------------------------------------
+IF OBJECT_ID('silver.erp_employee', 'U') IS NOT NULL
+    DROP TABLE silver.erp_employee;
+
+CREATE TABLE silver.erp_employee (
+    employee_sk        INT            NOT NULL,      -- surrogate key
+    business_entity_id INT            NOT NULL,      -- business key (PK in HR.Employee)
+
+    job_title          NVARCHAR(50)   NULL,
+    birth_date         DATE           NULL,
+    marital_status     NCHAR(1)       NULL,
+    gender             NCHAR(1)       NULL,
+    hire_date          DATE           NULL,
+    salaried_flag      BIT            NULL,
+    vacation_hours     SMALLINT       NULL,
+    sick_leave_hours   SMALLINT       NULL,
+    current_flag       BIT            NULL,
+
+   person_sk INT NULL,
+    row_hash           VARBINARY(32)  NULL,
+    dwh_create_date    DATETIME2(3)   NOT NULL
+        CONSTRAINT DF_silver_erp_employee_create DEFAULT SYSDATETIME(),
+    dwh_load_date      DATETIME2(3)   NOT NULL
+        CONSTRAINT DF_silver_erp_employee_load   DEFAULT SYSDATETIME(),
+    dwh_batch_id       BIGINT         NULL
+);
+
+ALTER TABLE silver.erp_employee
+    ADD CONSTRAINT PK_silver_erp_employee PRIMARY KEY (employee_sk);
+
+CREATE UNIQUE INDEX UX_silver_erp_employee_business_entity_id
+    ON silver.erp_employee (business_entity_id);
+
+CREATE INDEX IX_silver_erp_employee_person_sk
+    ON silver.erp_employee (person_sk);
+
+GO
+----------------------------------------------------------
+/*
 	Silver Sales Order Header
 */
 ----------------------------------------------------------
@@ -508,6 +549,8 @@ IF OBJECT_ID('dwh.seq_silver_country_region', 'SO') IS NULL
     EXEC('CREATE SEQUENCE dwh.seq_silver_country_region START WITH 1 INCREMENT BY 1;');
 IF OBJECT_ID('dwh.seq_silver_sales_person', 'SO') IS NULL
     EXEC('CREATE SEQUENCE dwh.seq_silver_sales_person START WITH 1 INCREMENT BY 1;');
+IF OBJECT_ID('dwh.seq_silver_employee', 'SO') IS NULL
+    EXEC('CREATE SEQUENCE dwh.seq_silver_employee START WITH 1 INCREMENT BY 1;');
 GO
 
 /*
@@ -554,6 +597,10 @@ IF NOT EXISTS (SELECT 1 FROM silver.erp_country_region WHERE country_sk = -1)
 IF NOT EXISTS (SELECT 1 FROM silver.erp_sales_person WHERE sales_person_sk = -1)
     INSERT INTO silver.erp_sales_person (sales_person_sk, person_id, is_active)
     VALUES (-1, -1, 1);
+
+IF NOT EXISTS (SELECT 1 FROM silver.erp_employee WHERE employee_sk = -1)
+    INSERT INTO silver.erp_employee (employee_sk, job_title, person_sk)
+    VALUES (-1,'Unknown',-1);
 GO
 
 /*
