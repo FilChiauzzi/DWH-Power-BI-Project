@@ -311,16 +311,18 @@ GO
 
 ----------------------------------------------------------
 /*
-	Bronze Department
+	Bronze Purchasing Ship Method
 */
 ---------------------------------------------------------
-IF OBJECT_ID ('bronze.erp_department', 'U') IS NOT NULL 
-	DROP TABLE bronze.erp_department;
+IF OBJECT_ID ('bronze.erp_ship_method', 'U') IS NOT NULL 
+	DROP TABLE bronze.erp_ship_method;
 
-CREATE TABLE bronze.erp_department(
-	[DepartmentID] SMALLINT NULL,
+CREATE TABLE bronze.erp_ship_method(
+	[ShipMethodID] INT NULL,
 	[Name] NVARCHAR(50) NULL,
-	[GroupName] NVARCHAR(50) NULL,
+	[ShipBase] MONEY NULL,
+	[ShipRate] MONEY NULL,
+    [rowguid] UNIQUEIDENTIFIER NULL,
 	[ModifiedDate] DATETIME NULL,
 
 	dwh_load_date DATETIME2(3) NOT NULL DEFAULT SYSDATETIME(),
@@ -328,33 +330,9 @@ CREATE TABLE bronze.erp_department(
 	dwh_source_row_num BIGINT NULL
 );
 
-CREATE CLUSTERED COLUMNSTORE INDEX cci_erp_department ON bronze.erp_department;
+CREATE CLUSTERED COLUMNSTORE INDEX cci_erp_ship_method ON bronze.erp_ship_method;
 GO
-
-----------------------------------------------------------
-/*
-	Bronze Employee Department History
-*/
----------------------------------------------------------
-IF OBJECT_ID ('bronze.erp_employee_department_history', 'U') IS NOT NULL 
-	DROP TABLE bronze.erp_employee_department_history;
-
-CREATE TABLE bronze.erp_employee_department_history(
-	[BusinessEntityID] INT NULL,
-	[DepartmentID] SMALLINT NULL,
-	[ShiftID] TINYINT NULL,
-	[StartDate] DATE NULL,
-	[EndDate] DATE NULL,
-	[ModifiedDate] DATETIME NULL,
-
-	dwh_load_date DATETIME2(3) NOT NULL DEFAULT SYSDATETIME(),
-	dwh_batch_id BIGINT NULL,
-	dwh_source_row_num BIGINT NULL
-);
-
-CREATE CLUSTERED COLUMNSTORE INDEX cci_erp_employee_department_history ON bronze.erp_employee_department_history;
-GO
-
+	
 ----------------------------------------------------------
 /*
 	Bronze Sales Order Header
