@@ -1,11 +1,37 @@
+/*
+=========================================================
+Bronze Data Quality Check – Employee
+=========================================================
+Purpose:
+    This stored procedure performs data quality validation
+    on the Bronze-layer table for the Employee domain.
+    It checks for null business keys, duplicate keys, and
+    missing or invalid business attributes. Blocking rules
+    (errors) prevent the row from entering the Silver layer,
+    while non-blocking rules (warnings) allow the row to pass
+    but log potential data issues.
+
+SSIS Usage:
+    This procedure is executed inside the metadata-driven
+    SSIS pipeline. SSIS loops through all active objects and
+    calls the corresponding Bronze Data Quality procedure for
+    each imported source table. Each procedure logs issues
+    into etl.data_quality_log and returns the number of
+    detected errors.
+
+Warning:
+    Running this procedure will delete previous quality logs
+    for the Employee object in the Bronze layer.
+*/
+
 USE [DWH_AdventureWorks2025]
 GO
-/****** Oggetto: StoredProcedure [etl].[usp_check_bronze_quality_load_employee]    Data dello script 15/10/2026 11:29:16 ******/
+
 SET ANSI_NULLS ON
 GO
 SET QUOTED_IDENTIFIER ON
 GO
-ALTER   PROCEDURE [etl].[usp_check_bronze_quality_load_employee]
+CREATE OR ALTER   PROCEDURE [etl].[usp_check_bronze_quality_load_employee]
     @batch_id        BIGINT,
     @max_reject_rate DECIMAL(5,2) = 20.00
 AS
