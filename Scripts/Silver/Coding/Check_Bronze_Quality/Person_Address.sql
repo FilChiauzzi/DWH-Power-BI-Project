@@ -1,3 +1,42 @@
+/*
+=========================================================
+Bronze Data Quality Check – Person Address
+=========================================================
+Purpose:
+    This stored procedure performs data quality validation
+    on the Bronze-layer table for the Person Address domain.
+    It checks for null business keys, duplicate keys, missing
+    foreign keys, and incomplete address attributes.
+
+Scope:
+    Source table:
+        bronze.erp_person_address
+
+    Main checks:
+        - AddressID NULL (business key missing) -> error
+        - Duplicate AddressID -> error
+        - StateProvinceID NULL (foreign key missing) -> error
+        - City NULL -> warning (Silver substitutes 'Unknown')
+        - PostalCode NULL -> warning (Silver substitutes 'Unknown')
+
+SSIS Usage:
+    This procedure is executed inside the metadata-driven
+    SSIS pipeline. SSIS loops through all active objects and
+    calls the corresponding Bronze Data Quality procedure for
+    each imported source table. Each procedure logs issues
+    into etl.data_quality_log and, when applicable, into
+    etl.rejected, and returns the number of detected errors.
+
+Reject handling:
+    Rows with blocking errors (NULL business key, NULL foreign
+    key, duplicate business key) are inserted into etl.rejected
+    together with a JSON snapshot of the raw source row.
+
+Warning:
+    Running this procedure will delete previous quality logs
+    for the Person Address object in the Bronze layer.
+*/
+
 CREATE OR ALTER PROCEDURE [etl].[usp_check_bronze_quality_load_person_address]
     @batch_id        BIGINT,
     @max_reject_rate DECIMAL(5,2) = 20.00
