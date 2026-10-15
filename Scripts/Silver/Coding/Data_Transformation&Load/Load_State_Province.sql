@@ -1,3 +1,54 @@
+/*
+=========================================================
+Silver Load – State Province (SCD1)
+=========================================================
+Purpose:
+    This stored procedure loads the Silver-layer table
+    for the State Province domain. It applies SCD Type 1
+    logic, performing either a FULL or INCREMENTAL load
+    based on the configuration stored in etl.config.
+
+    The procedure cleans raw Bronze data, applies business
+    rules (Unknown substitutions), computes row_hash for
+    change detection, and manages surrogate key generation
+    through dwh.seq_silver_state_province.
+
+    Foreign keys to Country Region and Territory are resolved
+    during the load, producing country_region_sk and
+    territory_sk for downstream dimensional modeling.
+
+FULL Load:
+    - Truncates the Silver table
+    - Resets the surrogate key sequence
+    - Reloads all valid rows from bronze.erp_state_province
+    - Excludes rows quarantined in etl.rejected
+    - Inserts all rows as new SCD1 records
+
+INCREMENTAL Load:
+    - Reads only rows with ModifiedDate > last watermark
+    - Excludes quarantined rows
+    - Updates existing Silver rows when row_hash changes
+    - Inserts new business keys not yet present in Silver
+    - Updates the watermark in etl.config
+
+Data Quality:
+    Rows rejected by Bronze DQ (NULL keys, duplicates,
+    missing foreign keys, etc.) are excluded from the load.
+    The procedure assumes Bronze DQ has already run for the
+    current batch.
+
+SSIS Usage:
+    This procedure is executed inside the metadata-driven
+    SSIS pipeline. SSIS reads etl.config to determine the
+    load type and watermark, then calls this procedure to
+    populate the Silver layer.
+
+Warning:
+    Running this procedure will delete previous Silver data
+    when load_type = 'full'. Ensure Bronze DQ has completed
+    successfully before executing this load.
+*/
+
 CREATE OR ALTER PROCEDURE [etl].[usp_load_silver_state_province]
     @batch_id BIGINT
 AS
