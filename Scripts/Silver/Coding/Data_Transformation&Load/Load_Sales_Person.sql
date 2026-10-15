@@ -1,4 +1,39 @@
-ALTER PROCEDURE etl.usp_load_silver_sales_person
+/*
+=========================================================
+Silver Load – Sales Person (SCD2)
+=========================================================
+Purpose:
+    Loads the Sales Person dimension into the Silver layer
+    using Slowly Changing Dimension Type 2 logic. Each change
+    to business attributes generates a new version of the row.
+    The procedure performs FULL or INCREMENTAL loads based on
+    the configuration stored in etl.config.
+
+SCD2 Behavior:
+    - FULL: rebuilds the dimension from scratch, inserting
+      one active version per business key.
+    - INCREMENTAL: detects changes via row_hash. When a change
+      is found, the current version is closed (is_active = 0)
+      and a new version is inserted with updated attributes.
+    - New business keys always generate a new active version.
+
+Lookups:
+    - employee_sk from silver.erp_employee
+    - territory_sk from silver.erp_sales_territory
+
+SSIS Usage:
+    This procedure is executed inside the metadata-driven SSIS
+    pipeline. SSIS loops through all active objects and calls
+    the corresponding Silver Load procedure for each domain.
+    The procedure inserts or updates rows in the Silver layer
+    and updates the watermark for incremental loads.
+
+Warning:
+    Running this procedure with load_type = 'full' will delete
+    all existing Silver data for Sales Person.
+*/
+
+CREATE OR ALTER PROCEDURE etl.usp_load_silver_sales_person
     @batch_id BIGINT
 AS
 BEGIN
