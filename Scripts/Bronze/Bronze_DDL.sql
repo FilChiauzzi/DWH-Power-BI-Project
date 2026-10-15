@@ -333,7 +333,7 @@ CREATE TABLE bronze.erp_ship_method(
 CREATE CLUSTERED COLUMNSTORE INDEX cci_erp_ship_method ON bronze.erp_ship_method;
 GO
 
-----------------------------------------------------------
+  ----------------------------------------------------------
 /*
 	Bronze Person Address
 */
@@ -357,9 +357,6 @@ CREATE TABLE bronze.erp_person_address(
 	dwh_source_row_num BIGINT NULL
 );
 
-CREATE CLUSTERED COLUMNSTORE INDEX cci_erp_person_address ON bronze.erp_person_address;
-GO
-
 ----------------------------------------------------------
 /*
 	Bronze Person State Province
@@ -372,8 +369,8 @@ CREATE TABLE bronze.erp_state_province(
 	[StateProvinceID] [int]  NULL,
 	[StateProvinceCode] [nchar](3)  NULL,
 	[CountryRegionCode] [nvarchar](3)  NULL,
-	[IsOnlyStateProvinceFlag] [dbo].[Flag]  NULL,
-	[Name] [dbo].[Name] NULL,
+	[IsOnlyStateProvinceFlag] [bit]  NULL,
+	[Name] [nvarchar](50) NULL,
 	[TerritoryID] [int] NULL,
 	[rowguid] [uniqueidentifier] ROWGUIDCOL  NULL,
 	[ModifiedDate] [datetime] NULL,
