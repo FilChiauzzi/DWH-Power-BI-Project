@@ -384,27 +384,35 @@ IF OBJECT_ID('silver.erp_sales_person', 'U') IS NOT NULL
     DROP TABLE silver.erp_sales_person;
 
 CREATE TABLE silver.erp_sales_person (
-    sales_person_sk   INT            NOT NULL,
-    person_id         INT            NOT NULL,   -- business key
+    sales_person_sk   INT            NOT NULL,      -- surrogate key SCD2
+    person_id         INT            NOT NULL,      -- business key (BusinessEntityID)
     territory_id      INT            NULL,
     sales_quota       MONEY          NULL,
-    bonus             MONEY          NULL,       -- source column is Bonus
+    bonus             MONEY          NULL,
     commission_pct    SMALLMONEY     NULL,
     sales_ytd         MONEY          NULL,
     sales_last_year   MONEY          NULL,
-    territory_sk      INT            NULL,
+
+    territory_sk      INT            NULL,          -- FK to silver.erp_sales_territory
+    employee_sk       INT            NULL,          -- FK to silver.erp_employee
 
     row_hash          VARBINARY(32)  NULL,
+
     dwh_create_date   DATETIME2(3)   NOT NULL
         CONSTRAINT DF_silver_erp_sales_person_create DEFAULT SYSDATETIME(),
+
     dwh_start_date    DATETIME2(3)   NOT NULL
         CONSTRAINT DF_silver_erp_sales_person_start  DEFAULT SYSDATETIME(),
+
     dwh_end_date      DATETIME2(3)   NOT NULL
         CONSTRAINT DF_silver_erp_sales_person_end    DEFAULT DATEFROMPARTS(9999,12,31),
+
     is_active         BIT            NOT NULL
         CONSTRAINT DF_silver_erp_sales_person_active DEFAULT 1,
+
     dwh_load_date     DATETIME2(3)   NOT NULL
         CONSTRAINT DF_silver_erp_sales_person_load   DEFAULT SYSDATETIME(),
+
     dwh_batch_id      BIGINT         NULL
 );
 
@@ -414,6 +422,12 @@ ALTER TABLE silver.erp_sales_person
 CREATE UNIQUE INDEX UX_silver_erp_sales_person_active_id
     ON silver.erp_sales_person (person_id)
     WHERE is_active = 1;
+
+CREATE INDEX IX_silver_erp_sales_person_employee_sk
+    ON silver.erp_sales_person (employee_sk);
+
+CREATE INDEX IX_silver_erp_sales_person_sales_territory_sk
+    ON silver.erp_sales_person (territory_sk);
 GO
 
 ----------------------------------------------------------
