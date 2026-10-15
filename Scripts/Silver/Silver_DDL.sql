@@ -510,7 +510,40 @@ CREATE INDEX IX_silver_erp_person_addres_sk
 CREATE UNIQUE INDEX UX_silver_person_address_id
     ON silver.erp_person_address (address_id);
 GO
+	
+---------------------------------------------------------
+-- Silver State Province  (SCD Type 1)
+---------------------------------------------------------
 
+IF OBJECT_ID('silver.erp_state_province', 'U') IS NOT NULL
+    DROP TABLE silver.erp_state_province;
+
+CREATE TABLE silver.erp_state_province (
+    state_province_sk          INT             NOT NULL,       -- surrogate key
+    state_province_id          INT             NOT NULL,       -- business key
+    state_province_code        NCHAR(3) 	   NULL,
+    country_region_code       NVARCHAR(3)      NULL,
+    country_region_sk         INT              NULL,
+    [name]                    NVARCHAR(50)     NULL,
+    territory_id              INT              NULL,
+    territory_sk              INT              NULL,
+    -- technical columns
+    row_hash            VARBINARY(32)   NULL,
+    dwh_create_date     DATETIME2(3)    NOT NULL
+        CONSTRAINT DF_silver_state_province_create DEFAULT SYSDATETIME(),
+    dwh_load_date       DATETIME2(3)    NOT NULL
+        CONSTRAINT DF_silver_state_province_load   DEFAULT SYSDATETIME(),
+    dwh_batch_id        BIGINT          NULL
+);
+
+ALTER TABLE silver.erp_state_province
+    ADD CONSTRAINT PK_silver_state_province_sk PRIMARY KEY (state_province_sk);
+
+CREATE INDEX IX_silver_erp_state_province_sk
+    ON silver.erp_state_province (state_province_sk);
+
+CREATE UNIQUE INDEX UX_silver_state_province_id
+    ON silver.erp_state_province (state_province_id);
 ----------------------------------------------------------
 /*
 	Silver Sales Order Header
@@ -607,6 +640,8 @@ IF OBJECT_ID('dwh.seq_silver_employee', 'SO') IS NULL
     EXEC('CREATE SEQUENCE dwh.seq_silver_employee START WITH 1 INCREMENT BY 1;');
 IF OBJECT_ID('dwh.seq_silver_person_address', 'SO') IS NULL
     EXEC('CREATE SEQUENCE dwh.seq_silver_person_address START WITH 1 INCREMENT BY 1;');
+IF OBJECT_ID('dwh.erp_state_province', 'SO') IS NULL
+    EXEC('CREATE SEQUENCE dwh.seq_silver_state_province START WITH 1 INCREMENT BY 1;');
 GO
 
 /*
