@@ -486,6 +486,7 @@ CREATE TABLE silver.erp_person_address (
     address_line2       NVARCHAR(60)    NULL,
     city                NVARCHAR(30)    NULL,
     state_province_id   INT             NULL,
+	state_province_sk   INT             NULL,
     postal_code         NVARCHAR(15)    NULL,
 
     -- coordinate estratte dal tipo geography del Bronze
@@ -509,6 +510,9 @@ CREATE INDEX IX_silver_erp_person_addres_sk
 
 CREATE UNIQUE INDEX UX_silver_person_address_id
     ON silver.erp_person_address (address_id);
+
+CREATE INDEX IX_silver_erp_person_state_province_sk
+    ON silver.erp_person_address (state_province_sk);
 GO
 	
 ---------------------------------------------------------
