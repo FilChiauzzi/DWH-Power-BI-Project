@@ -101,43 +101,6 @@ CREATE UNIQUE INDEX UX_silver_erp_category_id
 GO
 
 ---------------------------------------------------------
--- Silver Person Address  (SCD Type 1)
----------------------------------------------------------
-
-IF OBJECT_ID('silver.person_address', 'U') IS NOT NULL
-    DROP TABLE silver.person_address;
-
-CREATE TABLE silver.person_address (
-    address_sk          INT             NOT NULL,       -- surrogate key
-    address_id          INT             NOT NULL,       -- business key
-    address_line1       NVARCHAR(60)    NULL,
-    address_line2       NVARCHAR(60)    NULL,
-    city                NVARCHAR(30)    NULL,
-    state_province_id   INT             NULL,
-    postal_code         NVARCHAR(15)    NULL,
-
-    -- coordinate estratte dal tipo geography del Bronze
-    latitude            FLOAT           NULL,
-    longitude           FLOAT           NULL,
-
-    -- technical columns
-    row_hash            VARBINARY(32)   NULL,
-    dwh_create_date     DATETIME2(3)    NOT NULL
-        CONSTRAINT DF_silver_person_address_create DEFAULT SYSDATETIME(),
-    dwh_load_date       DATETIME2(3)    NOT NULL
-        CONSTRAINT DF_silver_person_address_load   DEFAULT SYSDATETIME(),
-    dwh_batch_id        BIGINT          NULL
-);
-
-ALTER TABLE silver.person_address
-    ADD CONSTRAINT PK_silver_person_address PRIMARY KEY (address_sk);
-
-CREATE UNIQUE INDEX UX_silver_person_address_id
-    ON silver.person_address (address_id);
-GO
-
-
----------------------------------------------------------
 -- Silver Subcategory  (SCD Type 1)
 ---------------------------------------------------------
 -- category_sk is the resolved FK to silver.erp_category; it is
@@ -508,6 +471,43 @@ CREATE INDEX IX_silver_erp_employee_person_sk
     ON silver.erp_employee (person_sk);
 
 GO
+	
+---------------------------------------------------------
+-- Silver Person Address  (SCD Type 1)
+---------------------------------------------------------
+
+IF OBJECT_ID('silver.person_address', 'U') IS NOT NULL
+    DROP TABLE silver.person_address;
+
+CREATE TABLE silver.person_address (
+    address_sk          INT             NOT NULL,       -- surrogate key
+    address_id          INT             NOT NULL,       -- business key
+    address_line1       NVARCHAR(60)    NULL,
+    address_line2       NVARCHAR(60)    NULL,
+    city                NVARCHAR(30)    NULL,
+    state_province_id   INT             NULL,
+    postal_code         NVARCHAR(15)    NULL,
+
+    -- coordinate estratte dal tipo geography del Bronze
+    latitude            FLOAT           NULL,
+    longitude           FLOAT           NULL,
+
+    -- technical columns
+    row_hash            VARBINARY(32)   NULL,
+    dwh_create_date     DATETIME2(3)    NOT NULL
+        CONSTRAINT DF_silver_person_address_create DEFAULT SYSDATETIME(),
+    dwh_load_date       DATETIME2(3)    NOT NULL
+        CONSTRAINT DF_silver_person_address_load   DEFAULT SYSDATETIME(),
+    dwh_batch_id        BIGINT          NULL
+);
+
+ALTER TABLE silver.person_address
+    ADD CONSTRAINT PK_silver_person_address PRIMARY KEY (address_sk);
+
+CREATE UNIQUE INDEX UX_silver_person_address_id
+    ON silver.person_address (address_id);
+GO
+
 ----------------------------------------------------------
 /*
 	Silver Sales Order Header
