@@ -476,10 +476,10 @@ GO
 -- Silver Person Address  (SCD Type 1)
 ---------------------------------------------------------
 
-IF OBJECT_ID('silver.person_address', 'U') IS NOT NULL
-    DROP TABLE silver.person_address;
+IF OBJECT_ID('silver.erp_person_address', 'U') IS NOT NULL
+    DROP TABLE silver.erp_person_address;
 
-CREATE TABLE silver.person_address (
+CREATE TABLE silver.erp_person_address (
     address_sk          INT             NOT NULL,       -- surrogate key
     address_id          INT             NOT NULL,       -- business key
     address_line1       NVARCHAR(60)    NULL,
@@ -501,11 +501,14 @@ CREATE TABLE silver.person_address (
     dwh_batch_id        BIGINT          NULL
 );
 
-ALTER TABLE silver.person_address
+ALTER TABLE silver.erp_person_address
     ADD CONSTRAINT PK_silver_person_address PRIMARY KEY (address_sk);
 
+CREATE INDEX IX_silver_erp_person_addres_sk
+    ON silver.erp_person_address (address_sk);
+
 CREATE UNIQUE INDEX UX_silver_person_address_id
-    ON silver.person_address (address_id);
+    ON silver.erp_person_address (address_id);
 GO
 
 ----------------------------------------------------------
