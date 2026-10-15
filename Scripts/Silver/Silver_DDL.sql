@@ -101,6 +101,43 @@ CREATE UNIQUE INDEX UX_silver_erp_category_id
 GO
 
 ---------------------------------------------------------
+-- Silver Person Address  (SCD Type 1)
+---------------------------------------------------------
+
+IF OBJECT_ID('silver.person_address', 'U') IS NOT NULL
+    DROP TABLE silver.person_address;
+
+CREATE TABLE silver.person_address (
+    address_sk          INT             NOT NULL,       -- surrogate key
+    address_id          INT             NOT NULL,       -- business key
+    address_line1       NVARCHAR(60)    NULL,
+    address_line2       NVARCHAR(60)    NULL,
+    city                NVARCHAR(30)    NULL,
+    state_province_id   INT             NULL,
+    postal_code         NVARCHAR(15)    NULL,
+
+    -- coordinate estratte dal tipo geography del Bronze
+    latitude            FLOAT           NULL,
+    longitude           FLOAT           NULL,
+
+    -- technical columns
+    row_hash            VARBINARY(32)   NULL,
+    dwh_create_date     DATETIME2(3)    NOT NULL
+        CONSTRAINT DF_silver_person_address_create DEFAULT SYSDATETIME(),
+    dwh_load_date       DATETIME2(3)    NOT NULL
+        CONSTRAINT DF_silver_person_address_load   DEFAULT SYSDATETIME(),
+    dwh_batch_id        BIGINT          NULL
+);
+
+ALTER TABLE silver.person_address
+    ADD CONSTRAINT PK_silver_person_address PRIMARY KEY (address_sk);
+
+CREATE UNIQUE INDEX UX_silver_person_address_id
+    ON silver.person_address (address_id);
+GO
+
+
+---------------------------------------------------------
 -- Silver Subcategory  (SCD Type 1)
 ---------------------------------------------------------
 -- category_sk is the resolved FK to silver.erp_category; it is
@@ -565,6 +602,8 @@ IF OBJECT_ID('dwh.seq_silver_sales_person', 'SO') IS NULL
     EXEC('CREATE SEQUENCE dwh.seq_silver_sales_person START WITH 1 INCREMENT BY 1;');
 IF OBJECT_ID('dwh.seq_silver_employee', 'SO') IS NULL
     EXEC('CREATE SEQUENCE dwh.seq_silver_employee START WITH 1 INCREMENT BY 1;');
+IF OBJECT_ID('dwh.seq_silver_person_address', 'SO') IS NULL
+    EXEC('CREATE SEQUENCE dwh.seq_silver_person_address START WITH 1 INCREMENT BY 1;');
 GO
 
 /*
@@ -615,6 +654,10 @@ IF NOT EXISTS (SELECT 1 FROM silver.erp_sales_person WHERE sales_person_sk = -1)
 IF NOT EXISTS (SELECT 1 FROM silver.erp_employee WHERE employee_sk = -1)
     INSERT INTO silver.erp_employee (employee_sk, job_title, person_sk)
     VALUES (-1,'Unknown',-1);
+
+IF NOT EXISTS (SELECT 1 FROM silver.person_address WHERE address_sk = -1)
+    INSERT INTO silver.person_address ( address_sk,address_id,address_line1,address_line2,city,state_province_id,postal_code,latitude,longitude )
+    VALUES (-1, -1, 'Unknown', NULL, 'Unknown', -1, 'Unknown', NULL, NULL );
 GO
 
 /*
