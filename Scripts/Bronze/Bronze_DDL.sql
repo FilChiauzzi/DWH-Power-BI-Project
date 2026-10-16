@@ -372,7 +372,7 @@ CREATE TABLE bronze.erp_state_province(
 	[IsOnlyStateProvinceFlag] [bit]  NULL,
 	[Name] [nvarchar](50) NULL,
 	[TerritoryID] [int] NULL,
-	[rowguid] [uniqueidentifier] ROWGUIDCOL  NULL,
+	[rowguid] [uniqueidentifier]   NULL,
 	[ModifiedDate] [datetime] NULL,
 
 	dwh_load_date DATETIME2(3) NOT NULL DEFAULT SYSDATETIME(),
@@ -381,6 +381,30 @@ CREATE TABLE bronze.erp_state_province(
 );
 
 CREATE CLUSTERED COLUMNSTORE INDEX cci_erp_state_province ON bronze.erp_state_province;
+GO
+
+----------------------------------------------------------
+/*
+	Bronze Ship Method
+*/
+---------------------------------------------------------
+IF OBJECT_ID ('bronze.erp_ship_method', 'U') IS NOT NULL 
+	DROP TABLE bronze.erp_ship_method;
+
+CREATE TABLE bronze.erp_ship_method(
+	[ShipMethodID] [int]  NULL,
+	[Name] [dbo].[Name]  NULL,
+	[ShipBase] [money]  NULL,
+	[ShipRate] [money]  NULL,
+	[rowguid] [uniqueidentifier] ROWGUIDCOL   NULL,
+	[ModifiedDate] [datetime]  NULL,
+
+	dwh_load_date DATETIME2(3) NOT NULL DEFAULT SYSDATETIME(),
+	dwh_batch_id BIGINT NULL,
+	dwh_source_row_num BIGINT NULL
+);
+
+CREATE CLUSTERED COLUMNSTORE INDEX cci_erp_ship_method ON bronze.erp_ship_method;
 GO
 
 ----------------------------------------------------------
