@@ -689,55 +689,204 @@ missing. Without this row, the NOT NULL DEFAULT -1 on
 category_sk would point to a member that does not exist.
 Run once, after the tables above exist. Safe to re-run.
 */
+---------------------------------------------------------
+-- CATEGORY (SCD0/SCD1 FULL)
+---------------------------------------------------------
 IF NOT EXISTS (SELECT 1 FROM silver.erp_category WHERE category_sk = -1)
-    INSERT INTO silver.erp_category (category_sk, category_id, category_name)
-    VALUES (-1, -1, 'Unknown');
+    INSERT INTO silver.erp_category (
+        category_sk, category_id, category_name,
+        row_hash, dwh_create_date, dwh_load_date, dwh_batch_id
+    )
+    VALUES (
+        -1, -1, 'Unknown',
+        NULL, SYSDATETIME(), SYSDATETIME(), -1
+    );
 
+---------------------------------------------------------
+-- SUBCATEGORY (SCD1)
+---------------------------------------------------------
 IF NOT EXISTS (SELECT 1 FROM silver.erp_subcategory WHERE subcategory_sk = -1)
-    INSERT INTO silver.erp_subcategory (subcategory_sk, subcategory_id, subcategory_name, category_sk)
-    VALUES (-1, -1, 'Unknown', -1);
+    INSERT INTO silver.erp_subcategory (
+        subcategory_sk, subcategory_id, subcategory_name, category_sk,
+        row_hash, dwh_create_date, dwh_load_date, dwh_batch_id
+    )
+    VALUES (
+        -1, -1, 'Unknown', -1,
+        NULL, SYSDATETIME(), SYSDATETIME(), -1
+    );
 
+---------------------------------------------------------
+-- PRODUCT (SCD1)
+---------------------------------------------------------
 IF NOT EXISTS (SELECT 1 FROM silver.erp_product WHERE product_sk = -1)
-    INSERT INTO silver.erp_product (product_sk, product_id, product_name, is_active, product_subcategory_sk)
-    VALUES (-1, -1, 'Unknown', 1, -1);
+    INSERT INTO silver.erp_product (
+        product_sk, product_id, product_name, is_active, product_subcategory_sk,
+        row_hash, dwh_create_date, dwh_start_date, dwh_end_date, dwh_load_date, dwh_batch_id
+    )
+    VALUES (
+        -1, -1, 'Unknown', 1, -1,
+        NULL, SYSDATETIME(), SYSDATETIME(), DATEFROMPARTS(9999,12,31), SYSDATETIME(), -1
+    );
 
+---------------------------------------------------------
+-- CUSTOMER (SCD2)
+---------------------------------------------------------
 IF NOT EXISTS (SELECT 1 FROM silver.erp_customer WHERE customer_sk = -1)
-    INSERT INTO silver.erp_customer (customer_sk, customer_id, customer_type, is_active)
-    VALUES (-1, -1, 'Unknown', 1);
+    INSERT INTO silver.erp_customer (
+        customer_sk, customer_id, customer_type, person_sk, store_sk, territory_sk,
+        row_hash, dwh_create_date, dwh_start_date, dwh_end_date, is_active, dwh_load_date, dwh_batch_id
+    )
+    VALUES (
+        -1, -1, 'Unknown', -1, -1, -1,
+        NULL, SYSDATETIME(), SYSDATETIME(), DATEFROMPARTS(9999,12,31), 1, SYSDATETIME(), -1
+    );
 
-IF NOT EXISTS (SELECT 1 FROM silver.erp_person WHERE person_sk = -1)
-    INSERT INTO silver.erp_person (person_sk, person_id, person_name)
-    VALUES (-1, -1, 'Unknown');
-
-IF NOT EXISTS (SELECT 1 FROM silver.erp_store WHERE store_sk = -1)
-    INSERT INTO silver.erp_store (store_sk, store_id, store_name)
-    VALUES (-1, -1, 'Unknown');
-
-IF NOT EXISTS (SELECT 1 FROM silver.erp_sales_territory WHERE territory_sk = -1)
-    INSERT INTO silver.erp_sales_territory (territory_sk, territory_id, territory_name)
-    VALUES (-1, -1, 'Unknown');
-
-IF NOT EXISTS (SELECT 1 FROM silver.erp_country_region WHERE country_sk = -1)
-    INSERT INTO silver.erp_country_region (country_sk, country_code, country_name)
-    VALUES (-1, '-1', 'Unknown');
-
-IF NOT EXISTS (SELECT 1 FROM silver.erp_sales_person WHERE sales_person_sk = -1)
-    INSERT INTO silver.erp_sales_person (sales_person_sk, person_id, is_active)
-    VALUES (-1, -1, 1);
-
+---------------------------------------------------------
+-- EMPLOYEE (SCD1)
+---------------------------------------------------------
 IF NOT EXISTS (SELECT 1 FROM silver.erp_employee WHERE employee_sk = -1)
-    INSERT INTO silver.erp_employee (employee_sk, job_title, person_sk)
-    VALUES (-1,'Unknown',-1);
+    INSERT INTO silver.erp_employee (
+        employee_sk, business_entity_id,job_title, person_sk,
+        row_hash, dwh_create_date, dwh_load_date, dwh_batch_id
+    )
+    VALUES (
+        -1, -1, 'Unknown', -1,
+        NULL, SYSDATETIME(), SYSDATETIME(), -1
+    );
 
-IF NOT EXISTS (SELECT 1 FROM silver.person_address WHERE address_sk = -1)
-    INSERT INTO silver.person_address ( address_sk,address_id,address_line1,address_line2,city,state_province_id,postal_code,latitude,longitude )
-    VALUES (-1, -1, 'Unknown', NULL, 'Unknown', -1, 'Unknown', NULL, NULL );
+---------------------------------------------------------
+-- SALES TERRITORY (SCD1)
+---------------------------------------------------------
+IF NOT EXISTS (SELECT 1 FROM silver.erp_sales_territory WHERE territory_sk = -1)
+    INSERT INTO silver.erp_sales_territory (
+        territory_sk, territory_id, territory_name,
+        row_hash, dwh_create_date, dwh_load_date, dwh_batch_id
+    )
+    VALUES (
+        -1, -1, 'Unknown',
+        NULL, SYSDATETIME(), SYSDATETIME(), -1
+    );
 
+---------------------------------------------------------
+-- COUNTRY REGION (SCD1)
+---------------------------------------------------------
+IF NOT EXISTS (SELECT 1 FROM silver.erp_country_region WHERE country_sk = -1)
+    INSERT INTO silver.erp_country_region (
+        country_sk, country_code, country_name,
+        row_hash, dwh_create_date, dwh_load_date, dwh_batch_id
+    )
+    VALUES (
+        -1, '-1', 'Unknown',
+        NULL, SYSDATETIME(), SYSDATETIME(), -1
+    );
+
+---------------------------------------------------------
+-- SALES PERSON (SCD1)
+---------------------------------------------------------
+IF NOT EXISTS (SELECT 1 FROM silver.erp_person WHERE person_sk = -1)
+    INSERT INTO silver.erp_person (
+        person_sk,
+        person_id,
+        person_name,
+        row_hash,
+        dwh_create_date,
+        dwh_load_date,
+        dwh_batch_id
+    )
+    VALUES (
+        -1,               -- person_sk
+        -1,               -- person_id (NOT NULL)
+        'Unknown',        -- person_name
+        NULL,             -- row_hash
+        SYSDATETIME(),    -- dwh_create_date
+        SYSDATETIME(),    -- dwh_load_date
+        -1                -- dwh_batch_id
+    );
+
+---------------------------------------------------------
+-- STORE (SCD1)
+---------------------------------------------------------
+IF NOT EXISTS (SELECT 1 FROM silver.erp_store WHERE store_sk = -1)
+    INSERT INTO silver.erp_store (
+        store_sk,
+        store_id,
+        store_name,
+        row_hash,
+        dwh_create_date,
+        dwh_load_date,
+        dwh_batch_id
+    )
+    VALUES (
+        -1,               -- store_sk
+        -1,               -- store_id (NOT NULL)
+        'Unknown',        -- store_name
+        NULL,             -- row_hash
+        SYSDATETIME(),    -- dwh_create_date
+        SYSDATETIME(),    -- dwh_load_date
+        -1                -- dwh_batch_id
+    );
+
+---------------------------------------------------------
+-- PERSON ADDRESS (SCD1)
+---------------------------------------------------------
+IF NOT EXISTS (SELECT 1 FROM silver.erp_person_address WHERE address_sk = -1)
+    INSERT INTO silver.erp_person_address (
+        address_sk, address_id, address_line1, address_line2, city,
+        state_province_sk, postal_code, latitude, longitude,
+        row_hash, dwh_create_date, dwh_load_date, dwh_batch_id
+    )
+    VALUES (
+        -1, -1, 'Unknown', NULL, 'Unknown',
+        -1, 'Unknown', NULL, NULL,
+        NULL, SYSDATETIME(), SYSDATETIME(), -1
+    );
+
+---------------------------------------------------------
+-- STATE PROVINCE(SCD1)
+---------------------------------------------------------
+IF NOT EXISTS (SELECT 1 FROM silver.erp_state_province WHERE state_province_sk = -1)
+    INSERT INTO silver.erp_state_province (
+        state_province_sk,
+        state_province_id,
+        state_province_code,
+        country_region_code,
+        country_region_sk,
+        name,
+        territory_id,
+        territory_sk,
+        row_hash,
+        dwh_create_date,
+        dwh_load_date,
+        dwh_batch_id
+    )
+    VALUES (
+        -1,               -- state_province_sk
+        -1,               -- state_province_id (NOT NULL)
+        'UNK',            -- state_province_code
+        'UNK',            -- country_region_code
+        -1,               -- country_region_sk
+        'Unknown',        -- name
+        -1,               -- territory_id
+        -1,               -- territory_sk
+        NULL,             -- row_hash
+        SYSDATETIME(),    -- dwh_create_date
+        SYSDATETIME(),    -- dwh_load_date
+        -1                -- dwh_batch_id
+    );
+
+---------------------------------------------------------
+-- SHIP METHOD (SCD0/SCD1)
+---------------------------------------------------------
 IF NOT EXISTS (SELECT 1 FROM silver.erp_ship_method WHERE ship_method_sk = -1)
-    INSERT INTO silver.erp_ship_method ([ship_method_sk], [ship_method_id], [ship_name] )
-    VALUES (-1, -1, 'Unknown');
+    INSERT INTO silver.erp_ship_method (
+        ship_method_sk, ship_method_id, ship_name,
+        row_hash, dwh_create_date, dwh_load_date, dwh_batch_id
+    )
+    VALUES (
+        -1, -1, 'Unknown',
+        NULL, SYSDATETIME(), SYSDATETIME(), -1
+    );
 GO
-
 /*
 =========================================================
 Tables still to define in this script
