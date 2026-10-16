@@ -59,108 +59,185 @@ Prerequisite: run 00_etl_ddl.sql first (etl.batch, etl.rejected,
 etl.data_quality_log).
 */
 
-ALTER PROCEDURE [etl].[usp_load_silver_category]
-    @batch_id BIGINT
+USE [DWH_AdventureWorks2025]
+GO
+/****** Oggetto: StoredProcedure [etl].[usp_check_bronze_quality_load_category]    Data dello script 16/10/2026 10:28:53 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+ALTER   PROCEDURE [etl].[usp_check_bronze_quality_load_category]
+    @batch_id        BIGINT,
+    @max_reject_rate DECIMAL(5,2) = 20.00
 AS
 BEGIN
     SET NOCOUNT ON;
     SET XACT_ABORT ON;
 
-    DECLARE 
-        @start_time DATETIME2(3) = SYSDATETIME(),
-        @end_time   DATETIME2(3),
-        @load_ts    DATETIME2(3) = SYSDATETIME(),
-        @rows_src   INT = 0,
-        @rows_ins   INT = 0;
+    DECLARE @batch_start_time DATETIME2(3) = SYSDATETIME(),
+            @rows_checked     INT           = 0,
+            @rows_rejected    INT           = 0,
+            @errors           INT           = 0,
+            @reject_rate      DECIMAL(9,4)  = 0;
 
     BEGIN TRY
         PRINT '====================================================';
-        PRINT 'Silver Load – CATEGORY (FULL ONLY) | batch: ' + CAST(@batch_id AS NVARCHAR(20));
+        PRINT 'Bronze Data Quality - category | batch: ' + CAST(@batch_id AS NVARCHAR(20));
         PRINT '====================================================';
-
-        ---------------------------------------------------------
-        -- Source set (after quarantine)
-        ---------------------------------------------------------
-        SELECT
-            b.ProductCategoryID AS category_id,
-
-            CASE
-                WHEN b.[Name] IS NULL OR LTRIM(RTRIM(b.[Name])) = ''
-                    THEN 'Unknown'
-                ELSE LTRIM(RTRIM(b.[Name]))
-            END AS category_name,
-
-            HASHBYTES('SHA2_256',
-                CONCAT_WS('|',
-                    CAST(b.ProductCategoryID AS VARCHAR(20)),
-                    CASE
-                        WHEN b.[Name] IS NULL OR LTRIM(RTRIM(b.[Name])) = ''
-                            THEN 'Unknown'
-                        ELSE LTRIM(RTRIM(b.[Name]))
-                    END
-                )
-            ) AS row_hash
-        INTO #src
-        FROM bronze.erp_category b
-        WHERE NOT EXISTS (
-            SELECT 1
-            FROM etl.rejected r
-            WHERE r.batch_id    = @batch_id
-              AND r.layer        = 'bronze'
-              AND r.object_name  = 'category'
-              AND r.business_key = CAST(b.ProductCategoryID AS NVARCHAR(200))
-        );
-
-        SELECT @rows_src = COUNT(*) FROM #src;
-
-        PRINT '>> Source rows (after quarantine): ' + CAST(@rows_src AS NVARCHAR(20));
-
-        ---------------------------------------------------------
-        -- FULL LOAD ONLY
-        ---------------------------------------------------------
-        PRINT '>> FULL load: truncate + reset sequence + reload';
 
         BEGIN TRANSACTION;
 
-            TRUNCATE TABLE silver.erp_category;
+            SELECT @rows_checked = COUNT(*)
+            FROM bronze.erp_category;
 
-            ALTER SEQUENCE dwh.seq_silver_category RESTART WITH 1;
+            ---------------------------------------------------------
+            -- RULE 0: source empty  ->  warning
+            ---------------------------------------------------------
+            IF @rows_checked = 0
+            BEGIN
+                INSERT INTO etl.data_quality_log
+                    (batch_id, layer, object_name, check_name, record_id, description, severity)
+                VALUES
+                    (@batch_id, 'bronze', 'category', 'Source empty', NULL,
+                     'bronze.erp_category contains no rows', 'warning');
+            END
 
-            INSERT INTO silver.erp_category
-                (category_sk, category_id, category_name,
-                 row_hash, dwh_create_date, dwh_load_date, dwh_batch_id)
-            SELECT
-                NEXT VALUE FOR dwh.seq_silver_category OVER (ORDER BY src.category_id),
-                src.category_id,
-                src.category_name,
-                src.row_hash,
-                @load_ts,
-                @load_ts,
-                @batch_id
-            FROM #src AS src;
+            ---------------------------------------------------------
+            -- RULE 1: business key NULL  ->  error (blocking)
+            ---------------------------------------------------------
+            PRINT '-- Rule 1: ProductCategoryID NULL';
 
-            SET @rows_ins = @@ROWCOUNT;
+            INSERT INTO etl.data_quality_log
+                (batch_id, layer, object_name, check_name, record_id, description, severity)
+            SELECT @batch_id, 'bronze', 'category',
+                   'ProductCategoryID NULL',
+                   CAST(b.ProductCategoryID AS NVARCHAR(200)),
+                   'Business key ProductCategoryID is NULL',
+                   'error'
+            FROM bronze.erp_category AS b
+            WHERE b.ProductCategoryID IS NULL;
+
+            -- Quarantine
+            INSERT INTO etl.rejected
+                (batch_id, layer, object_name, business_key, rule_code,
+                 rule_description, severity, raw_row)
+            SELECT @batch_id, 'bronze', 'category',
+                   CAST(b.ProductCategoryID AS NVARCHAR(200)),
+                   'NULL_BK',
+                   'Business key ProductCategoryID is NULL',
+                   'error',
+                   JSON_OBJECT('ProductCategoryID': b.ProductCategoryID,
+                               'Name':              b.[Name],
+                               'rowguid':           b.rowguid,
+                               'ModifiedDate':      b.ModifiedDate
+                               NULL ON NULL)
+            FROM bronze.erp_category AS b
+            WHERE b.ProductCategoryID IS NULL;
+
+            ---------------------------------------------------------
+            -- RULE 2: duplicated business key  ->  error (blocking)
+            ---------------------------------------------------------
+            PRINT '-- Rule 2: duplicated ProductCategoryID';
+
+            INSERT INTO etl.data_quality_log
+                (batch_id, layer, object_name, check_name, record_id, description, severity)
+            SELECT @batch_id, 'bronze', 'category',
+                   'Duplicate ProductCategoryID',
+                   CAST(b.ProductCategoryID AS NVARCHAR(200)),
+                   'Business key duplicated: ' + CAST(COUNT(*) AS VARCHAR(10)) + ' rows',
+                   'error'
+            FROM bronze.erp_category AS b
+            GROUP BY b.ProductCategoryID
+            HAVING COUNT(*) > 1;
+
+            INSERT INTO etl.rejected
+                (batch_id, layer, object_name, business_key, rule_code,
+                 rule_description, severity, raw_row)
+            SELECT @batch_id, 'bronze', 'category',
+                   CAST(b.ProductCategoryID AS NVARCHAR(200)),
+                   'DUP_BK',
+                   'Business key duplicated: ' + CAST(d.cnt AS VARCHAR(10)) + ' rows',
+                   'error',
+                   JSON_OBJECT('ProductCategoryID': b.ProductCategoryID,
+                               'Name':              b.[Name],
+                               'rowguid':           b.rowguid,
+                               'ModifiedDate':      b.ModifiedDate
+                               NULL ON NULL)
+            FROM bronze.erp_category AS b
+            INNER JOIN (
+                SELECT ProductCategoryID, COUNT(*) AS cnt
+                FROM bronze.erp_category
+                GROUP BY ProductCategoryID
+                HAVING COUNT(*) > 1
+            ) AS d
+                ON d.ProductCategoryID = b.ProductCategoryID;
+
+            ---------------------------------------------------------
+            -- RULE 3: name NULL or empty  ->  warning
+            ---------------------------------------------------------
+            PRINT '-- Rule 3: name NULL or empty (warning)';
+
+            INSERT INTO etl.data_quality_log
+                (batch_id, layer, object_name, check_name, record_id, description, severity)
+            SELECT @batch_id, 'bronze', 'category',
+                   'Name NULL or empty',
+                   CAST(b.ProductCategoryID AS NVARCHAR(200)),
+                   'Name is NULL or empty - the load substitutes ''Unknown''',
+                   'warning'
+            FROM bronze.erp_category AS b
+            WHERE b.[Name] IS NULL
+               OR LTRIM(RTRIM(b.[Name])) = '';
 
         COMMIT TRANSACTION;
 
-        DROP TABLE #src;
+        ---------------------------------------------------------
+        -- Summary
+        ---------------------------------------------------------
+        SELECT @errors = COUNT(*)
+        FROM etl.data_quality_log
+        WHERE batch_id   = @batch_id
+          AND layer       = 'bronze'
+          AND object_name = 'category'
+          AND severity IN ('error', 'critical');
 
-        SET @end_time = SYSDATETIME();
+        SELECT @rows_rejected = COUNT(*)
+        FROM etl.rejected
+        WHERE batch_id   = @batch_id
+          AND layer       = 'bronze'
+          AND object_name = 'category';
 
-        PRINT '>> FULL load completed';
-        PRINT '>> Rows inserted: ' + CAST(@rows_ins AS NVARCHAR(20));
+        IF @rows_checked > 0
+            SET @reject_rate =
+                CAST(@rows_rejected AS DECIMAL(9,4)) * 100.0 / @rows_checked;
+
+        PRINT '>> Rows checked:  ' + CAST(@rows_checked  AS NVARCHAR(20));
+        PRINT '>> Errors logged: ' + CAST(@errors        AS NVARCHAR(20));
+        PRINT '>> Rows rejected: ' + CAST(@rows_rejected AS NVARCHAR(20)) +
+              ' (' + CAST(@reject_rate AS NVARCHAR(10)) + '%)';
         PRINT '>> Duration: ' +
-              CAST(DATEDIFF(MILLISECOND, @start_time, @end_time) AS NVARCHAR(20)) + ' ms';
+              CAST(DATEDIFF(MILLISECOND, @batch_start_time, SYSDATETIME()) AS NVARCHAR(20)) + ' ms';
+
+        ---------------------------------------------------------
+        -- Threshold guard
+        ---------------------------------------------------------
+        IF @rows_checked > 0
+           AND @reject_rate > @max_reject_rate
+            THROW 51010, 'Rejection rate above the allowed threshold: the source looks broken. Pipeline stopped on purpose.', 1;
+
+        PRINT '====================================================';
+        PRINT 'Bronze Data Quality - category completed | batch: ' + CAST(@batch_id AS NVARCHAR(20));
         PRINT '====================================================';
 
+        RETURN @errors;
     END TRY
 
     BEGIN CATCH
-        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
-        IF OBJECT_ID('tempdb..#src') IS NOT NULL DROP TABLE #src;
+        IF @@TRANCOUNT > 0
+            ROLLBACK TRANSACTION;
 
         PRINT '====================================================';
-        PRINT 'ERROR during Silver load for: category';
+        PRINT 'ERROR during Bronze DQ check for: category';
         PRINT 'Message: ' + ERROR_MESSAGE();
         PRINT 'Number: '  + CAST(ERROR_NUMBER() AS NVARCHAR);
         PRINT 'State: '   + CAST(ERROR_STATE()  AS NVARCHAR);
@@ -170,4 +247,3 @@ BEGIN
         THROW;
     END CATCH
 END;
-GO
