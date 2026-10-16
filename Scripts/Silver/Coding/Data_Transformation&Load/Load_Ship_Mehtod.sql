@@ -1,28 +1,30 @@
 /*
 =========================================================
-Bronze Data Quality Check – Ship Method
+Silver Load – Ship Method (SCD1 – FULL ONLY)
 =========================================================
 Purpose:
-    This stored procedure performs data quality validation
-    on the Bronze-layer table for the Ship Method domain.
-    It checks for null business keys, duplicate keys, and
-    incomplete descriptive attributes such as missing names
-    or missing shipping cost components (ShipBase, ShipRate).
+    This stored procedure loads the Silver-layer table for
+    the Ship Method domain. Since the source contains only a
+    few static rows and does not change over time, the load
+    strategy is FULL-only: the Silver table is truncated and
+    fully reloaded at each batch execution.
+
+    The procedure applies business rules (Unknown name
+    substitution), computes row_hash for change detection,
+    and generates surrogate keys using the sequence
+    dwh.seq_silver_ship_method.
 
 SSIS Usage:
     This procedure is executed inside the metadata-driven
-    SSIS pipeline. SSIS loops through all active objects and
-    calls the corresponding Bronze Data Quality procedure for
-    each imported source table. Each procedure logs issues
-    into etl.data_quality_log and returns the number of
-    detected errors. Blocking errors (NULL or duplicate
-    business keys) are also inserted into etl.rejected.
+    SSIS pipeline. SSIS reads etl.config to determine the
+    load type, but for Ship Method the load is always FULL.
+    Rows rejected during Bronze DQ are excluded from the load.
 
 Warning:
-    Running this procedure will delete previous quality logs
-    for the Ship Method object in the Bronze layer. Only
-    blocking errors prevent the Silver load; warnings are
-    informational and do not stop the pipeline.
+    Running this procedure will delete all previous Silver
+    data for Ship Method. This is intentional, as the domain
+    is static and incremental logic would add unnecessary
+    complexity without any benefit.
 */
 
 USE [DWH_AdventureWorks2025]
