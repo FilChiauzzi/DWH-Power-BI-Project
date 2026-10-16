@@ -1,3 +1,46 @@
+/*
+=========================================================
+Silver Load – Sales Order Header (FACT)
+=========================================================
+Purpose:
+    This stored procedure loads the Silver-layer FACT table
+    for the Sales Order Header domain. It applies standard
+    Silver-layer transformation rules, computes row_hash
+    for change detection, resolves dimension surrogate keys
+    (SCD1/SCD2), and performs SCD Type 1 incremental updates.
+
+SSIS Usage:
+    SSIS executes this procedure inside the metadata-driven
+    Silver Load pipeline. The Bronze layer must be validated
+    before this step. The procedure supports both FULL and
+    INCREMENTAL load modes based on etl.config settings.
+
+Notes:
+    - The FACT uses the business key (SalesOrderID) as PK.
+      No surrogate key is generated for FACT tables.
+    - FULL load truncates the Silver FACT and reloads all
+      records from Bronze.
+    - INCREMENTAL load selects only rows with ModifiedDate
+      greater than the last watermark and applies SCD1 logic:
+        * UPDATE rows where row_hash has changed
+        * INSERT new SalesOrderID not present in Silver
+    - Dimension lookups:
+        * Customer (SCD2): resolved using is_active = 1 OR
+          order_date BETWEEN dwh_start_date AND dwh_end_date.
+        * SalesPerson (SCD2): same SCD2 logic as Customer.
+        * Territory (SCD1): resolved via direct business key.
+    - row_hash is used to detect changes in FACT attributes.
+    - Watermark (ModifiedDate) is updated after each load.
+    - Quarantine is applied via etl.rejected to exclude
+      invalid Bronze rows before loading Silver.
+
+SCD Type:
+    - FACT: SCD Type 1 (overwrite changes)
+    - Customer: SCD Type 2
+    - SalesPerson: SCD Type 2
+    - Territory: SCD Type 1
+*/
+
 USE [DWH_AdventureWorks2025];
 GO
 
