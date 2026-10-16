@@ -39,364 +39,359 @@ SCD:
       before Silver transformations and dimension lookups.
 */
 
-CREATE OR ALTER PROCEDURE [etl].[usp_check_bronze_quality_sales_order_detail]
-    @batch_id        BIGINT,
-    @max_reject_rate DECIMAL(5,2) = 20.00
+USE [DWH_AdventureWorks2025]
+GO
+
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE OR ALTER PROCEDURE [etl].[usp_load_silver_sales_order_detail]
+    @batch_id BIGINT
 AS
 BEGIN
     SET NOCOUNT ON;
     SET XACT_ABORT ON;
 
-    DECLARE 
+    DECLARE
         @batch_start_time DATETIME2(3) = SYSDATETIME(),
-        @rows_checked     INT           = 0,
-        @rows_rejected    INT           = 0,
-        @errors           INT           = 0,
-        @reject_rate      DECIMAL(9,4)  = 0;
+        @start_time       DATETIME2(3),
+        @end_time         DATETIME2(3),
+        @load_ts          DATETIME2(3) = SYSDATETIME(),
+        @load_type        VARCHAR(20),
+        @last_wm          DATETIME,
+        @new_wm           DATETIME,
+        @rows_src         INT = 0,
+        @rows_updated     INT = 0,
+        @rows_inserted    INT = 0;
 
     BEGIN TRY
-        PRINT '====================================================';
-        PRINT 'Bronze Data Quality - sales_order_detail | batch: ' + CAST(@batch_id AS NVARCHAR(20));
-        PRINT '====================================================';
-
-        BEGIN TRANSACTION;
-
-            ---------------------------------------------------------
-            -- Count source rows
-            ---------------------------------------------------------
-            SELECT @rows_checked = COUNT(*)
-            FROM bronze.erp_sales_order_detail;
-
-            ---------------------------------------------------------
-            -- RULE 0: source empty -> warning
-            ---------------------------------------------------------
-            IF @rows_checked = 0
-            BEGIN
-                INSERT INTO etl.data_quality_log
-                    (batch_id, layer, object_name, check_name, record_id, description, severity)
-                VALUES
-                    (@batch_id, 'bronze', 'sales_order_detail', 'Source empty', NULL,
-                     'bronze.erp_sales_order_detail contains no rows', 'warning');
-            END
-
-            ---------------------------------------------------------
-            -- RULE 1: SalesOrderID NULL -> error (blocking)
-            ---------------------------------------------------------
-            PRINT '-- Rule 1: SalesOrderID NULL';
-
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'sales_order_detail',
-                   'SalesOrderID NULL',
-                   CAST(b.SalesOrderID AS NVARCHAR(200)),
-                   'SalesOrderID is NULL',
-                   'error'
-            FROM bronze.erp_sales_order_detail AS b
-            WHERE b.SalesOrderID IS NULL;
-
-            INSERT INTO etl.rejected
-                (batch_id, layer, object_name, business_key, rule_code,
-                 rule_description, severity, raw_row)
-            SELECT @batch_id, 'bronze', 'sales_order_detail',
-                   CAST(b.SalesOrderID AS NVARCHAR(200)),
-                   'NULL_BK',
-                   'SalesOrderID is NULL',
-                   'error',
-                   JSON_OBJECT(
-                        'SalesOrderID': b.SalesOrderID,
-                        'SalesOrderDetailID': b.SalesOrderDetailID,
-                        'CarrierTrackingNumber': b.CarrierTrackingNumber,
-                        'OrderQty': b.OrderQty,
-                        'ProductID': b.ProductID,
-                        'SpecialOfferID': b.SpecialOfferID,
-                        'UnitPrice': b.UnitPrice,
-                        'UnitPriceDiscount': b.UnitPriceDiscount,
-                        'LineTotal': b.LineTotal,
-                        'rowguid': b.rowguid,
-                        'ModifiedDate': b.ModifiedDate,
-                        'dwh_load_date': b.dwh_load_date,
-                        'dwh_batch_id': b.dwh_batch_id,
-                        'dwh_source_row_num': b.dwh_source_row_num
-                        NULL ON NULL
-                   )
-            FROM bronze.erp_sales_order_detail AS b
-            WHERE b.SalesOrderID IS NULL;
-
-            ---------------------------------------------------------
-            -- RULE 2: SalesOrderDetailID NULL -> error (blocking)
-            ---------------------------------------------------------
-            PRINT '-- Rule 2: SalesOrderDetailID NULL';
-
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'sales_order_detail',
-                   'SalesOrderDetailID NULL',
-                   CONCAT(b.SalesOrderID, '-', b.SalesOrderDetailID),
-                   'SalesOrderDetailID is NULL',
-                   'error'
-            FROM bronze.erp_sales_order_detail AS b
-            WHERE b.SalesOrderDetailID IS NULL;
-
-            INSERT INTO etl.rejected
-                (batch_id, layer, object_name, business_key, rule_code,
-                 rule_description, severity, raw_row)
-            SELECT @batch_id, 'bronze', 'sales_order_detail',
-                   CONCAT(b.SalesOrderID, '-', b.SalesOrderDetailID),
-                   'NULL_LINE',
-                   'SalesOrderDetailID is NULL',
-                   'error',
-                   JSON_OBJECT(
-                        'SalesOrderID': b.SalesOrderID,
-                        'SalesOrderDetailID': b.SalesOrderDetailID,
-                        'CarrierTrackingNumber': b.CarrierTrackingNumber,
-                        'OrderQty': b.OrderQty,
-                        'ProductID': b.ProductID,
-                        'SpecialOfferID': b.SpecialOfferID,
-                        'UnitPrice': b.UnitPrice,
-                        'UnitPriceDiscount': b.UnitPriceDiscount,
-                        'LineTotal': b.LineTotal,
-                        'rowguid': b.rowguid,
-                        'ModifiedDate': b.ModifiedDate,
-                        'dwh_load_date': b.dwh_load_date,
-                        'dwh_batch_id': b.dwh_batch_id,
-                        'dwh_source_row_num': b.dwh_source_row_num
-                        NULL ON NULL
-                   )
-            FROM bronze.erp_sales_order_detail AS b
-            WHERE b.SalesOrderDetailID IS NULL;
-
-            ---------------------------------------------------------
-            -- RULE 3: Duplicate (SalesOrderID, SalesOrderDetailID)
-            ---------------------------------------------------------
-            PRINT '-- Rule 3: Duplicate SalesOrderID + SalesOrderDetailID';
-
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'sales_order_detail',
-                   CONCAT(b.SalesOrderID, '-', b.SalesOrderDetailID),
-                   'Duplicate line',
-                   'Duplicate SalesOrderID + SalesOrderDetailID',
-                   'error'
-            FROM (
-                SELECT SalesOrderID, SalesOrderDetailID
-                FROM bronze.erp_sales_order_detail
-                GROUP BY SalesOrderID, SalesOrderDetailID
-                HAVING COUNT(*) > 1
-            ) d
-            JOIN bronze.erp_sales_order_detail b
-                ON b.SalesOrderID = d.SalesOrderID
-               AND b.SalesOrderDetailID = d.SalesOrderDetailID;
-
-            INSERT INTO etl.rejected
-                (batch_id, layer, object_name, business_key, rule_code,
-                 rule_description, severity, raw_row)
-            SELECT @batch_id, 'bronze', 'sales_order_detail',
-                   CONCAT(b.SalesOrderID, '-', b.SalesOrderDetailID),
-                   'DUP_LINE',
-                   'Duplicate SalesOrderID + SalesOrderDetailID',
-                   'error',
-                   JSON_OBJECT(
-                        'SalesOrderID': b.SalesOrderID,
-                        'SalesOrderDetailID': b.SalesOrderDetailID,
-                        'CarrierTrackingNumber': b.CarrierTrackingNumber,
-                        'OrderQty': b.OrderQty,
-                        'ProductID': b.ProductID,
-                        'SpecialOfferID': b.SpecialOfferID,
-                        'UnitPrice': b.UnitPrice,
-                        'UnitPriceDiscount': b.UnitPriceDiscount,
-                        'LineTotal': b.LineTotal,
-                        'rowguid': b.rowguid,
-                        'ModifiedDate': b.ModifiedDate,
-                        'dwh_load_date': b.dwh_load_date,
-                        'dwh_batch_id': b.dwh_batch_id,
-                        'dwh_source_row_num': b.dwh_source_row_num
-                        NULL ON NULL
-                   )
-            FROM (
-                SELECT SalesOrderID, SalesOrderDetailID
-                FROM bronze.erp_sales_order_detail
-                GROUP BY SalesOrderID, SalesOrderDetailID
-                HAVING COUNT(*) > 1
-            ) d
-            JOIN bronze.erp_sales_order_detail b
-                ON b.SalesOrderID = d.SalesOrderID
-               AND b.SalesOrderDetailID = d.SalesOrderDetailID;
-
-            ---------------------------------------------------------
-            -- RULE 4: OrderQty <= 0 -> error
-            ---------------------------------------------------------
-            PRINT '-- Rule 4: OrderQty <= 0';
-
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'sales_order_detail',
-                   CONCAT(b.SalesOrderID, '-', b.SalesOrderDetailID),
-                   'OrderQty invalid',
-                   'OrderQty <= 0',
-                   'error'
-            FROM bronze.erp_sales_order_detail b
-            WHERE b.OrderQty <= 0;
-
-            INSERT INTO etl.rejected
-                (batch_id, layer, object_name, business_key, rule_code,
-                 rule_description, severity, raw_row)
-            SELECT @batch_id, 'bronze', 'sales_order_detail',
-                   CONCAT(b.SalesOrderID, '-', b.SalesOrderDetailID),
-                   'QTY_INVALID',
-                   'OrderQty <= 0',
-                   'error',
-                   JSON_OBJECT(
-                        'SalesOrderID': b.SalesOrderID,
-                        'SalesOrderDetailID': b.SalesOrderDetailID,
-                        'OrderQty': b.OrderQty,
-                        'ProductID': b.ProductID,
-                        'UnitPrice': b.UnitPrice,
-                        'UnitPriceDiscount': b.UnitPriceDiscount,
-                        'LineTotal': b.LineTotal,
-                        'ModifiedDate': b.ModifiedDate,
-                        'dwh_load_date': b.dwh_load_date,
-                        'dwh_batch_id': b.dwh_batch_id,
-                        'dwh_source_row_num': b.dwh_source_row_num
-                        NULL ON NULL
-                   )
-            FROM bronze.erp_sales_order_detail b
-            WHERE b.OrderQty <= 0;
-
-            ---------------------------------------------------------
-            -- RULE 5: UnitPrice < 0 OR UnitPriceDiscount < 0
-            ---------------------------------------------------------
-            PRINT '-- Rule 5: Negative prices';
-
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'sales_order_detail',
-                   CONCAT(b.SalesOrderID, '-', b.SalesOrderDetailID),
-                   'Negative price',
-                   'UnitPrice or UnitPriceDiscount < 0',
-                   'error'
-            FROM bronze.erp_sales_order_detail b
-            WHERE b.UnitPrice < 0
-               OR b.UnitPriceDiscount < 0;
-
-            INSERT INTO etl.rejected
-                (batch_id, layer, object_name, business_key, rule_code,
-                 rule_description, severity, raw_row)
-            SELECT @batch_id, 'bronze', 'sales_order_detail',
-                   CONCAT(b.SalesOrderID, '-', b.SalesOrderDetailID),
-                   'NEG_PRICE',
-                   'UnitPrice or UnitPriceDiscount < 0',
-                   'error',
-                   JSON_OBJECT(
-                        'SalesOrderID': b.SalesOrderID,
-                        'SalesOrderDetailID': b.SalesOrderDetailID,
-                        'UnitPrice': b.UnitPrice,
-                        'UnitPriceDiscount': b.UnitPriceDiscount,
-                        'LineTotal': b.LineTotal,
-                        'ModifiedDate': b.ModifiedDate,
-                        'dwh_load_date': b.dwh_load_date,
-                        'dwh_batch_id': b.dwh_batch_id,
-                        'dwh_source_row_num': b.dwh_source_row_num
-                        NULL ON NULL
-                   )
-            FROM bronze.erp_sales_order_detail b
-            WHERE b.UnitPrice < 0
-               OR b.UnitPriceDiscount < 0;
-
-            ---------------------------------------------------------
-            -- RULE 6: LineTotal mismatch
-            ---------------------------------------------------------
-            PRINT '-- Rule 6: LineTotal mismatch';
-
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'sales_order_detail',
-                   CONCAT(b.SalesOrderID, '-', b.SalesOrderDetailID),
-                   'LineTotal mismatch',
-                   'LineTotal <> (UnitPrice - UnitPriceDiscount) * OrderQty',
-                   'error'
-            FROM bronze.erp_sales_order_detail b
-            WHERE b.LineTotal <> (b.UnitPrice - b.UnitPriceDiscount) * b.OrderQty;
-
-            INSERT INTO etl.rejected
-                (batch_id, layer, object_name, business_key, rule_code,
-                 rule_description, severity, raw_row)
-            SELECT @batch_id, 'bronze', 'sales_order_detail',
-                   CONCAT(b.SalesOrderID, '-', b.SalesOrderDetailID),
-                   'LINE_MISMATCH',
-                   'LineTotal <> (UnitPrice - UnitPriceDiscount) * OrderQty',
-                   'error',
-                   JSON_OBJECT(
-                        'SalesOrderID': b.SalesOrderID,
-                        'SalesOrderDetailID': b.SalesOrderDetailID,
-                        'OrderQty': b.OrderQty,
-                        'UnitPrice': b.UnitPrice,
-                        'UnitPriceDiscount': b.UnitPriceDiscount,
-                        'LineTotal': b.LineTotal,
-                        'ModifiedDate': b.ModifiedDate,
-                        'dwh_load_date': b.dwh_load_date,
-                        'dwh_batch_id': b.dwh_batch_id,
-                        'dwh_source_row_num': b.dwh_source_row_num
-                        NULL ON NULL
-                   )
-            FROM bronze.erp_sales_order_detail b
-            WHERE b.LineTotal <> (b.UnitPrice - b.UnitPriceDiscount) * b.OrderQty;
-
-        COMMIT TRANSACTION;
-
         ---------------------------------------------------------
-        -- Summary
+        -- Read configuration
         ---------------------------------------------------------
-        SELECT @errors = COUNT(*)
-        FROM etl.data_quality_log
-        WHERE batch_id   = @batch_id
-          AND layer       = 'bronze'
-          AND object_name = 'sales_order_detail'
-          AND severity IN ('error','critical');
+        SELECT 
+            @load_type = load_type,
+            @last_wm   = last_watermark_value
+        FROM etl.config
+        WHERE object_name = 'sales_order_detail'
+          AND is_active = 1;
 
-        SELECT @rows_rejected = COUNT(*)
-        FROM etl.rejected
-        WHERE batch_id   = @batch_id
-          AND layer       = 'bronze'
-          AND object_name = 'sales_order_detail';
-
-        IF @rows_checked > 0
-            SET @reject_rate =
-                CAST(@rows_rejected AS DECIMAL(9,4)) * 100.0 / @rows_checked;
-
-        PRINT '>> Rows checked:  ' + CAST(@rows_checked  AS NVARCHAR(20));
-        PRINT '>> Errors logged: ' + CAST(@errors        AS NVARCHAR(20));
-        PRINT '>> Rows rejected: ' + CAST(@rows_rejected AS NVARCHAR(20)) +
-              ' (' + CAST(@reject_rate AS NVARCHAR(10)) + '%)';
-        PRINT '>> Duration: ' +
-              CAST(DATEDIFF(MILLISECOND, @batch_start_time, SYSDATETIME()) AS NVARCHAR(20)) + ' ms';
-
-        ---------------------------------------------------------
-        -- Threshold guard
-        ---------------------------------------------------------
-        IF @rows_checked > 0
-           AND @reject_rate > @max_reject_rate
-            THROW 51011, 'Rejection rate above threshold: SALES ORDER DETAIL source likely broken. Pipeline stopped on purpose.', 1;
+        IF @load_type IS NULL
+            THROW 51000, 'No active configuration found for SALES_ORDER_DETAIL.', 1;
 
         PRINT '====================================================';
-        PRINT 'Bronze Data Quality - sales_order_detail completed | batch: ' + CAST(@batch_id AS NVARCHAR(20));
+        PRINT 'Silver Load – SALES ORDER DETAIL | batch: ' + CAST(@batch_id AS NVARCHAR(20));
+        PRINT 'Load type: ' + @load_type;
         PRINT '====================================================';
 
-        RETURN @errors;
+        ---------------------------------------------------------
+        -- FULL LOAD
+        ---------------------------------------------------------
+        IF @load_type = 'full'
+        BEGIN
+            SET @start_time = SYSDATETIME();
+
+            BEGIN TRANSACTION;
+
+                TRUNCATE TABLE silver.erp_sales_order_detail;
+
+                ---------------------------------------------------------
+                -- Build FULL source set (#src_full)
+                ---------------------------------------------------------
+                SELECT
+                    COALESCE(b.SalesOrderID, -1)        AS sales_order_id,
+                    COALESCE(b.SalesOrderDetailID, -1)  AS sales_order_detail_id,
+                    b.CarrierTrackingNumber,
+                    b.OrderQty,
+                    COALESCE(b.ProductID, -1)           AS product_id,
+                    b.UnitPrice,
+                    b.UnitPriceDiscount,
+                    b.LineTotal,
+                    b.ModifiedDate                      AS modified_date,
+                    HASHBYTES('SHA2_256',
+                        CONCAT_WS('|',
+                            CAST(b.SalesOrderID AS VARCHAR(20)),
+                            CAST(b.SalesOrderDetailID AS VARCHAR(20)),
+                            CAST(b.OrderQty AS VARCHAR(20)),
+                            CAST(b.ProductID AS VARCHAR(20)),
+                            CAST(b.UnitPrice AS VARCHAR(50)),
+                            CAST(b.UnitPriceDiscount AS VARCHAR(50)),
+                            CAST(b.LineTotal AS VARCHAR(50)),
+                            CAST(b.ModifiedDate AS VARCHAR(30))
+                        )
+                    ) AS row_hash
+                INTO #src_full
+                FROM bronze.erp_sales_order_detail b
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM etl.rejected r
+                    WHERE r.batch_id = @batch_id
+                      AND r.layer = 'bronze'
+                      AND r.object_name = 'sales_order_detail'
+                      AND r.business_key = CONCAT(b.SalesOrderID, '-', b.SalesOrderDetailID)
+                )
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM etl.rejected r
+                    WHERE r.batch_id = @batch_id
+                      AND r.layer = 'bronze'
+                      AND r.object_name = 'sales_order_header'
+                      AND r.business_key = CAST(b.SalesOrderID AS NVARCHAR(200))
+                );
+
+                SELECT @rows_src = COUNT(*) FROM #src_full;
+
+                PRINT '>> Source rows (FULL, after quarantine): ' + CAST(@rows_src AS NVARCHAR(20));
+
+                ---------------------------------------------------------
+                -- Lookup SKs con CTE (solo Product SCD2)
+                ---------------------------------------------------------
+                ;WITH src_lkp AS (
+                    SELECT
+                        f.*,
+                        COALESCE(p.product_sk, -1) AS product_sk
+                    FROM #src_full f
+                    LEFT JOIN silver.erp_product p
+                        ON f.product_id = p.product_id
+                       AND (
+                            p.is_active = 1
+                            OR (f.modified_date >= p.dwh_start_date AND f.modified_date < p.dwh_end_date)
+                       )
+                )
+                INSERT INTO silver.erp_sales_order_detail
+                    (sales_order_id,
+                     sales_order_detail_id,
+                     carrier_tracking_number,
+                     order_qty,
+                     product_id,
+                     unit_price,
+                     unit_price_discount,
+                     line_total,
+                     modified_date,
+                     product_sk,
+                     row_hash,
+                     dwh_create_date,
+                     dwh_load_date,
+                     dwh_batch_id)
+                SELECT
+                    src.sales_order_id,
+                    src.sales_order_detail_id,
+                    src.CarrierTrackingNumber,
+                    src.OrderQty,
+                    src.product_id,
+                    src.UnitPrice,
+                    src.UnitPriceDiscount,
+                    src.LineTotal,
+                    src.modified_date,
+                    src.product_sk,
+                    src.row_hash,
+                    @load_ts,
+                    @load_ts,
+                    @batch_id
+                FROM src_lkp src;
+
+                SET @rows_inserted = @@ROWCOUNT;
+
+            COMMIT TRANSACTION;
+
+            DROP TABLE #src_full;
+
+            SET @end_time = SYSDATETIME();
+
+            PRINT '>> FULL load completed';
+            PRINT '>> Rows inserted: ' + CAST(@rows_inserted AS NVARCHAR(20));
+            PRINT '====================================================';
+            RETURN;
+        END
+
+        ---------------------------------------------------------
+        -- INCREMENTAL LOAD
+        ---------------------------------------------------------
+        ELSE IF @load_type = 'incremental'
+        BEGIN
+            SET @start_time = SYSDATETIME();
+
+            BEGIN TRANSACTION;
+
+                ---------------------------------------------------------
+                -- Build DELTA (#src_delta)
+                ---------------------------------------------------------
+                SELECT
+                    COALESCE(b.SalesOrderID, -1)        AS sales_order_id,
+                    COALESCE(b.SalesOrderDetailID, -1)  AS sales_order_detail_id,
+                    b.CarrierTrackingNumber,
+                    b.OrderQty,
+                    COALESCE(b.ProductID, -1)           AS product_id,
+                    b.UnitPrice,
+                    b.UnitPriceDiscount,
+                    b.LineTotal,
+                    b.ModifiedDate                      AS modified_date,
+                    HASHBYTES('SHA2_256',
+                        CONCAT_WS('|',
+                            CAST(b.SalesOrderID AS VARCHAR(20)),
+                            CAST(b.SalesOrderDetailID AS VARCHAR(20)),
+                            CAST(b.OrderQty AS VARCHAR(20)),
+                            CAST(b.ProductID AS VARCHAR(20)),
+                            CAST(b.UnitPrice AS VARCHAR(50)),
+                            CAST(b.UnitPriceDiscount AS VARCHAR(50)),
+                            CAST(b.LineTotal AS VARCHAR(50)),
+                            CAST(b.ModifiedDate AS VARCHAR(30))
+                        )
+                    ) AS row_hash
+                INTO #src_delta
+                FROM bronze.erp_sales_order_detail b
+                WHERE b.ModifiedDate > @last_wm
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM etl.rejected r
+                    WHERE r.batch_id = @batch_id
+                      AND r.layer = 'bronze'
+                      AND r.object_name = 'sales_order_detail'
+                      AND r.business_key = CONCAT(b.SalesOrderID, '-', b.SalesOrderDetailID)
+                )
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM etl.rejected r
+                    WHERE r.batch_id = @batch_id
+                      AND r.layer = 'bronze'
+                      AND r.object_name = 'sales_order_header'
+                      AND r.business_key = CAST(b.SalesOrderID AS NVARCHAR(200))
+                );
+
+                SELECT @rows_src = COUNT(*) FROM #src_delta;
+
+                IF @rows_src = 0
+                BEGIN
+                    PRINT '>> No delta found.';
+                    DROP TABLE #src_delta;
+                    ROLLBACK TRANSACTION;
+                    RETURN;
+                END
+
+                ---------------------------------------------------------
+                -- Lookup SKs con CTE (solo Product SCD2)
+                ---------------------------------------------------------
+                ;WITH src_lkp AS (
+                    SELECT
+                        d.*,
+                        COALESCE(p.product_sk, -1) AS product_sk
+                    FROM #src_delta d
+                    LEFT JOIN silver.erp_product p
+                        ON d.product_id = p.product_id
+                       AND (
+                            p.is_active = 1
+                            OR (d.modified_date >= p.dwh_start_date AND d.modified_date < p.dwh_end_date)
+                       )
+                )
+
+                ---------------------------------------------------------
+                -- UPDATE changed rows
+                ---------------------------------------------------------
+                UPDATE tgt
+                SET tgt.carrier_tracking_number = src.CarrierTrackingNumber,
+                    tgt.order_qty              = src.OrderQty,
+                    tgt.product_id             = src.product_id,
+                    tgt.unit_price             = src.UnitPrice,
+                    tgt.unit_price_discount    = src.UnitPriceDiscount,
+                    tgt.line_total             = src.LineTotal,
+                    tgt.modified_date          = src.ModifiedDate,
+                    tgt.product_sk             = src.product_sk,
+                    tgt.row_hash               = src.row_hash,
+                    tgt.dwh_load_date          = @load_ts,
+                    tgt.dwh_batch_id           = @batch_id
+                FROM silver.erp_sales_order_detail tgt
+                JOIN src_lkp src
+                    ON tgt.sales_order_id = src.sales_order_id
+                   AND tgt.sales_order_detail_id = src.sales_order_detail_id
+                WHERE tgt.row_hash <> src.row_hash;
+
+                SET @rows_updated = @@ROWCOUNT;
+
+                ---------------------------------------------------------
+                -- INSERT new business keys
+                ---------------------------------------------------------
+                INSERT INTO silver.erp_sales_order_detail
+                    (sales_order_id,
+                     sales_order_detail_id,
+                     carrier_tracking_number,
+                     order_qty,
+                     product_id,
+                     unit_price,
+                     unit_price_discount,
+                     line_total,
+                     modified_date,
+                     product_sk,
+                     row_hash,
+                     dwh_create_date,
+                     dwh_load_date,
+                     dwh_batch_id)
+                SELECT
+                    src.sales_order_id,
+                    src.sales_order_detail_id,
+                    src.CarrierTrackingNumber,
+                    src.OrderQty,
+                    src.product_id,
+                    src.UnitPrice,
+                    src.UnitPriceDiscount,
+                    src.LineTotal,
+                    src.ModifiedDate,
+                    src.product_sk,
+                    src.row_hash,
+                    @load_ts,
+                    @load_ts,
+                    @batch_id
+                FROM src_lkp src
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM silver.erp_sales_order_detail tgt
+                    WHERE tgt.sales_order_id = src.sales_order_id
+                      AND tgt.sales_order_detail_id = src.sales_order_detail_id
+                );
+
+                SET @rows_inserted = @@ROWCOUNT;
+
+                ---------------------------------------------------------
+                -- Update watermark
+                ---------------------------------------------------------
+                SELECT @new_wm = MAX(modified_date) FROM #src_delta;
+
+                UPDATE etl.config
+                SET last_watermark_value = @new_wm
+                WHERE object_name = 'sales_order_detail'
+                  AND is_active = 1;
+
+            COMMIT TRANSACTION;
+
+            DROP TABLE #src_delta;
+
+            SET @end_time = SYSDATETIME();
+
+            PRINT '>> INCREMENTAL load completed';
+            PRINT '>> Rows updated:  ' + CAST(@rows_updated  AS NVARCHAR(20));
+            PRINT '>> Rows inserted: ' + CAST(@rows_inserted AS NVARCHAR(20));
+            PRINT '====================================================';
+        END
+
+        ELSE
+        BEGIN
+            THROW 51020, 'Unsupported load type for SALES_ORDER_DETAIL.', 1;
+        END
+
     END TRY
 
     BEGIN CATCH
         IF @@TRANCOUNT > 0
             ROLLBACK TRANSACTION;
 
+        IF OBJECT_ID('tempdb..#src_full')  IS NOT NULL DROP TABLE #src_full;
+        IF OBJECT_ID('tempdb..#src_delta') IS NOT NULL DROP TABLE #src_delta;
+
         PRINT '====================================================';
-        PRINT 'ERROR during Bronze DQ check for: sales_order_detail';
+        PRINT 'ERROR during Silver load for: sales_order_detail';
         PRINT 'Message: ' + ERROR_MESSAGE();
-        PRINT 'Number: '  + CAST(ERROR_NUMBER() AS NVARCHAR);
-        PRINT 'State: '   + CAST(ERROR_STATE()  AS NVARCHAR);
-        PRINT 'Line: '    + CAST(ERROR_LINE()   AS NVARCHAR);
         PRINT '====================================================';
 
         THROW;
     END CATCH
 END;
-GO
+
