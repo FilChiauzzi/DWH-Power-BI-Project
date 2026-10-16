@@ -639,6 +639,72 @@ CREATE INDEX IX_silver_erp_sales_order_header_modified_date
     ON silver.erp_sales_order_header (modified_date);
 GO
 
+----------------------------------------------------------
+/*
+    Silver Sales Order Detail
+*/
+----------------------------------------------------------
+-- NOTE: modified_date stays DATETIME, NOT DATE. It is the
+--       watermark column of the incremental load: casting it
+--       to DATE would truncate the time and lose changes made
+--       during the same day.
+-- NOTE: This table represents the FACT grain at the order-line
+--       level: quantity, unit price, discount and line total
+--       live here, not in the header.
+-- NOTE: SalesOrderID + SalesOrderDetailID form the natural PK.
+--       Both columns must be NOT NULL to guarantee referential
+--       integrity and avoid “unknown” business keys.
+
+IF OBJECT_ID('silver.erp_sales_order_detail', 'U') IS NOT NULL
+    DROP TABLE silver.erp_sales_order_detail;
+GO
+
+CREATE TABLE silver.erp_sales_order_detail (
+    sales_order_id         INT             NOT NULL,   -- business key (FK to header)
+    sales_order_detail_id  INT             NOT NULL,   -- business key (line number)
+
+    carrier_tracking_number NVARCHAR(25)   NULL,
+    order_qty              SMALLINT        NULL,
+    product_id             INT             NULL,
+    special_offer_id       INT             NULL,
+    unit_price             MONEY           NULL,
+    unit_price_discount    MONEY           NULL,
+    line_total             NUMERIC(38,6)   NULL,
+    modified_date          DATETIME        NULL,       -- watermark: never DATE
+
+    -- surrogate keys resolved in Silver
+    product_sk             INT             NULL,
+    special_offer_sk       INT             NULL,
+
+    -- technical columns
+    row_hash               VARBINARY(32)   NULL,
+    dwh_create_date        DATETIME2(3)    NOT NULL
+        CONSTRAINT DF_silver_erp_sales_order_detail_create DEFAULT SYSDATETIME(),
+    dwh_load_date          DATETIME2(3)    NOT NULL
+        CONSTRAINT DF_silver_erp_sales_order_detail_load   DEFAULT SYSDATETIME(),
+    dwh_batch_id           BIGINT          NULL
+);
+
+----------------------------------------------------------
+-- Primary Key
+----------------------------------------------------------
+ALTER TABLE silver.erp_sales_order_detail
+    ADD CONSTRAINT PK_silver_erp_sales_order_detail
+        PRIMARY KEY (sales_order_id, sales_order_detail_id);
+
+----------------------------------------------------------
+-- Useful Indexes
+----------------------------------------------------------
+CREATE INDEX IX_silver_erp_sales_order_detail_product_sk
+    ON silver.erp_sales_order_detail (product_sk);
+
+CREATE INDEX IX_silver_erp_sales_order_detail_special_offer_sk
+    ON silver.erp_sales_order_detail (special_offer_sk);
+
+CREATE INDEX IX_silver_erp_sales_order_detail_modified_date
+    ON silver.erp_sales_order_detail (modified_date);
+GO
+
 /*
 =========================================================
 Sequences (created only if missing)
