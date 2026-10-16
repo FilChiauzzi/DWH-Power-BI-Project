@@ -393,7 +393,7 @@ IF OBJECT_ID ('bronze.erp_ship_method', 'U') IS NOT NULL
 
 CREATE TABLE bronze.erp_ship_method(
 	[ShipMethodID] [int]  NULL,
-	[Name] [dbo].[Name]  NULL,
+	[Name] [nvarchar](50) NULL,
 	[ShipBase] [money]  NULL,
 	[ShipRate] [money]  NULL,
 	[rowguid] [uniqueidentifier] ROWGUIDCOL   NULL,
