@@ -41,7 +41,7 @@ Warning:
 USE [DWH_AdventureWorks2025]
 GO
 
-CREATE OR ALTER PROCEDURE [etl].[usp_check_bronze_quality_sales_order_header]
+CREATE OR ALTER PROCEDURE [etl].[usp_check_bronze_quality_load_sales_order_header]
     @batch_id        BIGINT,
     @max_reject_rate DECIMAL(5,2) = 20.00
 AS
