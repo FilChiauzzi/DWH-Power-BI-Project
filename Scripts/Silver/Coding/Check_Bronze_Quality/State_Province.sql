@@ -38,7 +38,7 @@ Warning:
     for the State Province object in the Bronze layer.
 */
 
-ALTER PROCEDURE [etl].[usp_check_bronze_quality_load_state_province]
+CREATE OR ALTER PROCEDURE [etl].[usp_check_bronze_quality_load_state_province]
     @batch_id        BIGINT,
     @max_reject_rate DECIMAL(5,2) = 20.00
 AS
