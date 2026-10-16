@@ -1,3 +1,43 @@
+/*
+=========================================================
+Bronze Data Quality Check – SalesOrderHeader (FACT)
+=========================================================
+Purpose:
+    This stored procedure performs data quality validation
+    on the Bronze-layer table for the SalesOrderHeader
+    domain (FACT). It ensures that all incoming raw records
+    from the OLTP source meet the minimum quality standards
+    before being consumed by the Silver FACT load.
+
+    The procedure checks for null or invalid business keys,
+    inconsistent dates, negative numeric values, mismatched
+    totals, missing mandatory foreign keys, and other
+    structural or technical anomalies. Any invalid record is
+    logged and quarantined for further inspection.
+
+Pipeline Usage:
+    This procedure is executed inside the metadata-driven
+    SSIS pipeline. SSIS loops through all active objects and
+    calls the corresponding Bronze Data Quality procedure
+    before loading the Silver layer. All detected issues are
+    logged into etl.data_quality_log and invalid rows are
+    stored in etl.rejected with the full raw JSON payload.
+
+Incremental Strategy:
+    The Bronze layer is loaded using a watermark-based
+    incremental strategy. Data Quality checks are always
+    executed on the Bronze table itself (FULL validation),
+    regardless of whether new changes were detected. CDC is
+    not used at this stage; it is reserved exclusively for
+    the Silver FACT incremental load.
+
+Warning:
+    Running this procedure will delete previous quality logs
+    for the SalesOrderHeader object in the Bronze layer.
+    Ensure that downstream processes do not rely on older
+    Bronze-level quality entries.
+*/
+
 USE [DWH_AdventureWorks2025]
 GO
 
