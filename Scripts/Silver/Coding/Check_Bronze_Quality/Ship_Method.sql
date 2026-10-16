@@ -1,3 +1,30 @@
+/*
+=========================================================
+Bronze Data Quality Check – Ship Method
+=========================================================
+Purpose:
+    This stored procedure performs data quality validation
+    on the Bronze-layer table for the Ship Method domain.
+    It checks for null business keys, duplicate keys, and
+    incomplete descriptive attributes such as missing names
+    or missing shipping cost components.
+
+SSIS Usage:
+    This procedure is executed inside the metadata-driven
+    SSIS pipeline. SSIS loops through all active objects and
+    calls the corresponding Bronze Data Quality procedure for
+    each imported source table. Each procedure logs issues
+    into etl.data_quality_log and returns the number of
+    detected errors. Blocking errors (NULL or duplicate
+    business keys) are also inserted into etl.rejected.
+
+Warning:
+    Running this procedure will delete previous quality logs
+    for the Ship Method object in the Bronze layer. Only
+    blocking errors prevent the Silver load; warnings are
+    informational and do not stop the pipeline.
+*/
+
 CREATE OR ALTER PROCEDURE [etl].[usp_check_bronze_quality_load_ship_method]
     @batch_id        BIGINT,
     @max_reject_rate DECIMAL(5,2) = 20.00
