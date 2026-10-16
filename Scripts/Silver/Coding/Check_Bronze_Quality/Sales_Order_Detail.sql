@@ -1,3 +1,44 @@
+/*
+=========================================================
+Bronze Data Quality – Sales Order Detail
+=========================================================
+Purpose:
+    This stored procedure validates the Bronze-layer table
+    for the Sales Order Detail domain. It applies blocking
+    and non-blocking quality rules, logs issues into
+    etl.data_quality_log, and inserts rejected rows into
+    etl.rejected. The procedure enforces business-key
+    integrity and numeric consistency before the Silver
+    pipeline is allowed to run.
+
+SSIS Usage:
+    SSIS executes this procedure inside the metadata-driven
+    Bronze Quality pipeline. If the rejection rate exceeds
+    the configured threshold, the pipeline stops on purpose
+    to prevent corrupted data from propagating to Silver.
+
+Notes:
+    - SalesOrderID and SalesOrderDetailID are mandatory
+      business keys: NULL values are blocking errors.
+    - Duplicate (SalesOrderID, SalesOrderDetailID) pairs
+      are blocking errors because the FACT grain must be
+      unique at the order-line level.
+    - OrderQty must be strictly positive.
+    - UnitPrice and UnitPriceDiscount must be non-negative.
+    - LineTotal must match the formula:
+          (UnitPrice - UnitPriceDiscount) * OrderQty
+    - All rejected rows are stored as JSON in etl.rejected
+      to support auditability and troubleshooting.
+    - The final rejection rate is compared against
+      @max_reject_rate; exceeding it raises an exception
+      and stops the ETL pipeline intentionally.
+
+SCD:
+    - No SCD logic is applied at Bronze level.
+    - This procedure only validates raw transactional data
+      before Silver transformations and dimension lookups.
+*/
+
 CREATE OR ALTER PROCEDURE [etl].[usp_check_bronze_quality_sales_order_detail]
     @batch_id        BIGINT,
     @max_reject_rate DECIMAL(5,2) = 20.00
