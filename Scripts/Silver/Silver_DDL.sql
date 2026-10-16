@@ -548,6 +548,36 @@ CREATE INDEX IX_silver_erp_state_province_sk
 
 CREATE UNIQUE INDEX UX_silver_state_province_id
     ON silver.erp_state_province (state_province_id);
+
+---------------------------------------------------------
+-- Silver Ship Method  (SCD Type 1)
+---------------------------------------------------------
+
+IF OBJECT_ID('silver.erp_ship_method', 'U') IS NOT NULL
+    DROP TABLE silver.erp_ship_method;
+
+CREATE TABLE silver.erp_ship_method (
+    [ship_method_sk] [int] NOT NULL,
+	[ship_method_id] [int]  NOT NULL,
+	[ship_name] [nvarchar](50) NULL,
+	[ship_base] [money]  NULL,
+	[ship_rate] [money]  NULL,
+
+    -- technical columns
+    row_hash          VARBINARY(32)  NULL,
+    dwh_create_date   DATETIME2(3)   NOT NULL
+        CONSTRAINT DF_silver_erp_ship_method_create DEFAULT SYSDATETIME(),
+    dwh_load_date     DATETIME2(3)   NOT NULL
+        CONSTRAINT DF_silver_erp_ship_method_load   DEFAULT SYSDATETIME(),
+    dwh_batch_id      BIGINT         NULL
+);
+
+ALTER TABLE silver.erp_ship_method
+    ADD CONSTRAINT PK_silver_erp_ship_method PRIMARY KEY (ship_method_sk);
+
+CREATE UNIQUE INDEX UX_silver_erp_ship_method_id
+    ON silver.erp_ship_method (ship_method_id);
+GO
 ----------------------------------------------------------
 /*
 	Silver Sales Order Header
@@ -646,6 +676,8 @@ IF OBJECT_ID('dwh.seq_silver_person_address', 'SO') IS NULL
     EXEC('CREATE SEQUENCE dwh.seq_silver_person_address START WITH 1 INCREMENT BY 1;');
 IF OBJECT_ID('dwh.erp_state_province', 'SO') IS NULL
     EXEC('CREATE SEQUENCE dwh.seq_silver_state_province START WITH 1 INCREMENT BY 1;');
+IF OBJECT_ID('dwh.erp_ship_method', 'SO') IS NULL
+    EXEC('CREATE SEQUENCE dwh.seq_silver_ship_method START WITH 1 INCREMENT BY 1;');
 GO
 
 /*
@@ -700,6 +732,10 @@ IF NOT EXISTS (SELECT 1 FROM silver.erp_employee WHERE employee_sk = -1)
 IF NOT EXISTS (SELECT 1 FROM silver.person_address WHERE address_sk = -1)
     INSERT INTO silver.person_address ( address_sk,address_id,address_line1,address_line2,city,state_province_id,postal_code,latitude,longitude )
     VALUES (-1, -1, 'Unknown', NULL, 'Unknown', -1, 'Unknown', NULL, NULL );
+
+IF NOT EXISTS (SELECT 1 FROM silver.erp_ship_method WHERE ship_method_sk = -1)
+    INSERT INTO silver.erp_ship_method ([ship_method_sk], [ship_method_id], [ship_name] )
+    VALUES (-1, -1, 'Unknown');
 GO
 
 /*
