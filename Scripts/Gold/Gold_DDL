@@ -1,0 +1,44 @@
+IF OBJECT_ID('gold.fact_sales_order', 'U') IS NOT NULL
+    DROP TABLE gold.fact_sales_order;
+GO
+
+CREATE TABLE gold.fact_sales_order (
+    -- Business keys
+    sales_order_id         INT           NOT NULL,
+    sales_order_detail_id  INT           NOT NULL,
+
+    -- Dates (optimized as DATE)
+    order_date             DATE          NULL,
+    due_date               DATE          NULL,
+    ship_date              DATE          NULL,
+    modified_date          DATE          NULL,
+
+    -- Dimension SKs
+    customer_sk            INT           NULL,
+    person_sk              INT           NULL,
+    territory_sk           INT           NULL,
+    product_sk             INT           NULL,
+
+    -- Measures
+    order_qty              SMALLINT      NULL,
+    unit_price             MONEY         NULL,
+    unit_price_discount    MONEY         NULL,
+    line_total             NUMERIC(38,6) NULL,
+    sub_total              MONEY         NULL,
+    tax_amount             MONEY         NULL,
+    freight                MONEY         NULL,
+    total_due              MONEY         NULL,
+
+    -- Technical
+    row_hash               VARBINARY(32) NULL,
+    dwh_create_date        DATETIME2(3)  NOT NULL
+        CONSTRAINT DF_gold_fact_sales_order_create DEFAULT SYSDATETIME(),
+    dwh_load_date          DATETIME2(3)  NOT NULL
+        CONSTRAINT DF_gold_fact_sales_order_load   DEFAULT SYSDATETIME(),
+    dwh_batch_id           BIGINT        NULL
+);
+
+ALTER TABLE gold.fact_sales_order
+    ADD CONSTRAINT PK_gold_fact_sales_order
+        PRIMARY KEY (sales_order_id, sales_order_detail_id);
+GO
