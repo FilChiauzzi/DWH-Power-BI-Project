@@ -1,3 +1,43 @@
+/*
+=========================================================
+Gold Fact Load – Sales Order
+=========================================================
+Purpose:
+    This stored procedure loads the gold.fact_sales_order
+    table using a robust incremental strategy based on the
+    ERP ModifiedDate field and row_hash change detection.
+    
+    The procedure supports two load types:
+        - FULL: rebuilds the entire fact table by truncating
+          and reloading all rows from the Silver layer.
+        - INCREMENTAL: loads only new or updated rows by
+          comparing Silver.ModifiedDate with the maximum
+          ModifiedDate already present in Gold, and applies
+          row_hash-based change detection for updates.
+
+Incremental Logic:
+    The delta is determined without using any watermark.
+    Instead, the procedure identifies new or changed rows
+    by comparing:
+        - Silver.modified_date > MAX(Gold.modified_date)
+        - Silver.row_hash <> Gold.row_hash
+
+    Two operations are performed:
+        - UPDATE: existing business keys with changed data
+          (row_hash mismatch) are updated.
+        - INSERT: new business keys not present in Gold are
+          inserted.
+
+Technical Fields:
+    The fact table includes row_hash for change detection,
+    dwh_create_date and dwh_load_date for ETL auditing, and
+    dwh_batch_id for batch traceability.
+
+Warning:
+    Running a FULL load will truncate the entire
+    gold.fact_sales_order table before repopulating it.
+*/
+
 CREATE OR ALTER PROCEDURE [etl].[usp_load_gold_fact_sales_order]
     @batch_id BIGINT
 AS
