@@ -87,108 +87,99 @@ BEGIN
     SET NOCOUNT ON;
     SET XACT_ABORT ON;
 
-    DECLARE
-        @batch_start_time DATETIME2(3) = SYSDATETIME(),
-        @start_time       DATETIME2(3),
-        @end_time         DATETIME2(3),
-        @load_ts          DATETIME2(3) = SYSDATETIME(),
-        @load_type        VARCHAR(20),
-        @rows_src         INT = 0,
-        @rows_inserted    INT = 0;
+    DECLARE 
+        @start_time DATETIME2(3) = SYSDATETIME(),
+        @end_time   DATETIME2(3),
+        @load_ts    DATETIME2(3) = SYSDATETIME(),
+        @rows_src   INT = 0,
+        @rows_ins   INT = 0;
 
     BEGIN TRY
-        ---------------------------------------------------------
-        -- Read configuration
-        ---------------------------------------------------------
-        SELECT @load_type = load_type
-        FROM etl.config
-        WHERE object_name = 'sales_territory'
-          AND is_active = 1;
-
-        IF @load_type IS NULL
-            THROW 51000, 'No active configuration found for SALES_TERRITORY.', 1;
-
         PRINT '====================================================';
         PRINT 'Silver Load – SALES TERRITORY (FULL ONLY) | batch: ' + CAST(@batch_id AS NVARCHAR(20));
-        PRINT 'Load type: ' + @load_type;
         PRINT '====================================================';
 
         ---------------------------------------------------------
-        -- Reject unsupported load types
+        -- Source set (after quarantine)
         ---------------------------------------------------------
-        IF @load_type <> 'full'
-        BEGIN
-            THROW 51021, 'SALES_TERRITORY supports FULL load only. Check etl.config.', 1;
-        END
+        SELECT
+            st.TerritoryID AS territory_id,
+
+            CASE
+                WHEN st.Name IS NULL OR TRIM(st.Name) = ''
+                    THEN 'Unknown'
+                ELSE TRIM(st.Name)
+            END AS territory_name,
+
+            CASE
+                WHEN st.[Group] IS NULL OR TRIM(st.[Group]) = ''
+                    THEN 'Unknown'
+                ELSE TRIM(st.[Group])
+            END AS continent_name,
+
+            CASE
+                WHEN st.CountryRegionCode IS NULL OR TRIM(st.CountryRegionCode) = ''
+                    THEN 'N/A'
+                ELSE TRIM(st.CountryRegionCode)
+            END AS country_code,
+
+            cr.country_sk,
+
+            HASHBYTES('SHA2_256',
+                CONCAT_WS('|',
+                    st.TerritoryID,
+                    CASE WHEN st.Name IS NULL OR TRIM(st.Name) = '' THEN 'Unknown' ELSE TRIM(st.Name) END,
+                    CASE WHEN st.[Group] IS NULL OR TRIM(st.[Group]) = '' THEN 'Unknown' ELSE TRIM(st.[Group]) END,
+                    CASE WHEN st.CountryRegionCode IS NULL OR TRIM(st.CountryRegionCode) = '' THEN 'N/A' ELSE TRIM(st.CountryRegionCode) END
+                )
+            ) AS row_hash
+
+        INTO #src
+        FROM bronze.erp_sales_territory st
+        LEFT JOIN silver.erp_country_region cr
+            ON TRIM(st.CountryRegionCode) = cr.country_code
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM etl.rejected r
+            WHERE r.batch_id    = @batch_id
+              AND r.layer        = 'bronze'
+              AND r.object_name  = 'sales_territory'
+              AND r.business_key = CAST(st.TerritoryID AS NVARCHAR(200))
+        );
+
+        SELECT @rows_src = COUNT(*) FROM #src;
+
+        PRINT '>> Source rows (after quarantine): ' + CAST(@rows_src AS NVARCHAR(20));
 
         ---------------------------------------------------------
-        -- FULL LOAD
+        -- FULL LOAD ONLY
         ---------------------------------------------------------
-        SET @start_time = SYSDATETIME();
+        PRINT '>> FULL load: truncate + reset sequence + reload';
 
         BEGIN TRANSACTION;
 
-            PRINT '>> FULL LOAD: Truncating silver.erp_sales_territory';
             TRUNCATE TABLE silver.erp_sales_territory;
 
-            PRINT '>> FULL LOAD: Resetting sequence dwh.seq_silver_sales_territory';
+            -------------------------------------------------------
+            -- INSERT UNKNOWN MEMBER
+            -------------------------------------------------------
+            IF NOT EXISTS (SELECT 1 FROM silver.erp_sales_territory WHERE territory_sk = -1)
+                INSERT INTO silver.erp_sales_territory (
+                    territory_sk, territory_id, territory_name,
+                    country_code, continent_name, country_sk,
+                    row_hash, dwh_create_date, dwh_load_date, dwh_batch_id
+                )
+                VALUES (
+                    -1, -1, 'Unknown',
+                    'N/A', 'Unknown', NULL,
+                    NULL, @load_ts, @load_ts, -1
+                );
+
+            -------------------------------------------------------
+            -- INSERT ALL RECORDS + SURROGATE KEY
+            -------------------------------------------------------
             ALTER SEQUENCE dwh.seq_silver_sales_territory RESTART WITH 1;
 
-            ---------------------------------------------------------
-            -- Build FULL source set (#src_full)
-            ---------------------------------------------------------
-            SELECT
-                st.TerritoryID AS territory_id,
-
-                CASE
-                    WHEN st.Name IS NULL OR TRIM(st.Name) = ''
-                        THEN 'Unknown'
-                    ELSE TRIM(st.Name)
-                END AS territory_name,
-
-                CASE
-                    WHEN st.[Group] IS NULL OR TRIM(st.[Group]) = ''
-                        THEN 'Unknown'
-                    ELSE TRIM(st.[Group])
-                END AS continent_name,
-
-                CASE
-                    WHEN st.CountryRegionCode IS NULL OR TRIM(st.CountryRegionCode) = ''
-                        THEN 'N/A'
-                    ELSE TRIM(st.CountryRegionCode)
-                END AS country_code,
-
-                cr.country_sk,
-
-                HASHBYTES('SHA2_256',
-                    CONCAT_WS('|',
-                        st.TerritoryID,
-                        CASE WHEN st.Name IS NULL OR TRIM(st.Name) = '' THEN 'Unknown' ELSE TRIM(st.Name) END,
-                        CASE WHEN st.[Group] IS NULL OR TRIM(st.[Group]) = '' THEN 'Unknown' ELSE TRIM(st.[Group]) END,
-                        CASE WHEN st.CountryRegionCode IS NULL OR TRIM(st.CountryRegionCode) = '' THEN 'N/A' ELSE TRIM(st.CountryRegionCode) END
-                    )
-                ) AS row_hash
-
-            INTO #src_full
-            FROM bronze.erp_sales_territory st
-            LEFT JOIN silver.erp_country_region cr
-                ON TRIM(st.CountryRegionCode) = cr.country_code
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM etl.rejected r
-                WHERE r.batch_id    = @batch_id
-                  AND r.layer        = 'bronze'
-                  AND r.object_name  = 'sales_territory'
-                  AND r.business_key = CAST(st.TerritoryID AS NVARCHAR(200))
-            );
-
-            SELECT @rows_src = COUNT(*) FROM #src_full;
-
-            PRINT '>> Source rows (FULL, after quarantine): ' + CAST(@rows_src AS NVARCHAR(20));
-
-            ---------------------------------------------------------
-            -- Insert FULL (SCD1)
-            ---------------------------------------------------------
             INSERT INTO silver.erp_sales_territory
                 (territory_sk, territory_id, territory_name,
                  country_code, continent_name, country_sk,
@@ -204,18 +195,18 @@ BEGIN
                 @load_ts,
                 @load_ts,
                 @batch_id
-            FROM #src_full src;
+            FROM #src AS src;
 
-            SET @rows_inserted = @@ROWCOUNT;
+            SET @rows_ins = @@ROWCOUNT;
 
         COMMIT TRANSACTION;
 
-        DROP TABLE #src_full;
+        DROP TABLE #src;
 
         SET @end_time = SYSDATETIME();
 
         PRINT '>> FULL load completed';
-        PRINT '>> Rows inserted: ' + CAST(@rows_inserted AS NVARCHAR(20));
+        PRINT '>> Rows inserted: ' + CAST(@rows_ins AS NVARCHAR(20));
         PRINT '>> Duration: ' +
               CAST(DATEDIFF(MILLISECOND, @start_time, @end_time) AS NVARCHAR(20)) + ' ms';
         PRINT '====================================================';
@@ -223,10 +214,8 @@ BEGIN
     END TRY
 
     BEGIN CATCH
-        IF @@TRANCOUNT > 0
-            ROLLBACK TRANSACTION;
-
-        IF OBJECT_ID('tempdb..#src_full') IS NOT NULL DROP TABLE #src_full;
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        IF OBJECT_ID('tempdb..#src') IS NOT NULL DROP TABLE #src;
 
         PRINT '====================================================';
         PRINT 'ERROR during Silver load for: sales_territory';
