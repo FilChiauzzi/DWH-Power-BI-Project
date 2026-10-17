@@ -1,76 +1,12 @@
-/*
-=========================================================
-Silver Load – Person (SCD Type 1)
-=========================================================
-Purpose:
-    Loads the Person dimension into Silver with SCD1 logic:
-    one row per business key, attributes overwritten in place.
-
-Load types:
-    FULL:
-        - TRUNCATE Silver
-        - RESET surrogate key sequence
-        - INSERT the entire cleaned + quarantined source
-      The dimension is rebuilt from scratch and aligned to Bronze.
-
-    INCREMENTAL:
-        - UPDATE changed rows (row_hash comparison)
-        - INSERT new business keys
-      Idempotent: a second run makes no further changes.
-
-Source rules (same hardening as Bronze DQ):
-    - Bronze already guarantees:
-         * BusinessEntityID not NULL
-         * No duplicates
-         * Standardized names (NULL/empty → warning)
-         * Quarantine of invalid rows
-    - Silver applies:
-         * TRIM normalization
-         * row_hash (SHA2-256) for change detection
-         * Exclusion of quarantined rows
-
-Flow:
-    1. Read load_type and last_watermark_value from etl.config
-    2. FULL:
-         - Build #src_full (clean + quarantine gate)
-         - TRUNCATE + RESET SEQUENCE + INSERT all rows
-    3. INCREMENTAL:
-         - Build #src_delta (ModifiedDate > watermark)
-         - UPDATE changed rows (row_hash comparison)
-         - INSERT new business keys
-         - Update watermark
-    4. Report counters
-
-Why SCD1:
-    Person is a stable master entity. Changes overwrite previous
-    values instead of generating historical versions. Only the
-    latest version of each person is kept.
-
-Deliberately not done:
-    - No delete of missing keys (SCD1 never deletes)
-    - No business logic already owned by the DQ check
-    - No use of ROW_NUMBER() or dwh_source_row_num
-      (Bronze DQ already ensures one valid row per business key)
-
-SSIS Usage:
-    EXEC etl.usp_load_silver_person ?
-        param 0: batch_id (same variable used by Bronze DQ)
-
-Prerequisite:
-    Run 00_etl_ddl.sql first (etl.batch, etl.rejected,
-    etl.data_quality_log, sequences, Silver tables).
-*/
-
-
 USE [DWH_AdventureWorks2025]
 GO
-
+/****** Oggetto: StoredProcedure [etl].[usp_load_silver_person]    Data dello script 17/10/2026 19:14:04 ******/
 SET ANSI_NULLS ON
 GO
 SET QUOTED_IDENTIFIER ON
 GO
 
-CREATE OR ALTER PROCEDURE [etl].[usp_load_silver_person]
+ALTER PROCEDURE [etl].[usp_load_silver_person]
     @batch_id BIGINT
 AS
 BEGIN
@@ -219,7 +155,7 @@ BEGIN
             -- (empty Silver -> 1900, so everything is read)
             -----------------------------------------------------
             SELECT @last_silver_load = ISNULL(MAX(dwh_load_date), '1900-01-01')
-            FROM silver.erp_subcategory;
+            FROM silver.erp_person;
 
             PRINT '>> Last Silver load: ' + CONVERT(NVARCHAR(30), @last_silver_load, 121);
 
