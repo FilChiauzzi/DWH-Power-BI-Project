@@ -1,44 +1,41 @@
 /*
 =========================================================
-Silver Load – Sales Order Header (FACT)
+Silver Load – Sales Order Header (FACT, SCD1)
 =========================================================
 Purpose:
-    This stored procedure loads the Silver-layer FACT table
-    for the Sales Order Header domain. It applies standard
-    Silver-layer transformation rules, computes row_hash
-    for change detection, resolves dimension surrogate keys
-    (SCD1/SCD2), and performs SCD Type 1 incremental updates.
+    Loads silver.erp_sales_order_header from
+    bronze.erp_sales_order_header. Applies standard cleaning,
+    computes row_hash for change detection, resolves dimension
+    surrogate keys and performs SCD Type 1 updates.
 
-SSIS Usage:
-    SSIS executes this procedure inside the metadata-driven
-    Silver Load pipeline. The Bronze layer must be validated
-    before this step. The procedure supports both FULL and
-    INCREMENTAL load modes based on etl.config settings.
+Delta logic (Bronze -> Silver):
+    Silver reads Bronze through bronze.dwh_load_date (when the
+    row ARRIVED in Bronze), not through the ERP ModifiedDate.
+    The "bookmark" is derived from the Silver table itself:
+        last Silver load = MAX(silver.erp_sales_order_header.dwh_load_date)
+    etl.config.last_watermark_value belongs ONLY to the
+    OLTP -> Bronze step: this procedure neither reads nor
+    writes it.
 
-Notes:
-    - The FACT uses the business key (SalesOrderID) as PK.
-      No surrogate key is generated for FACT tables.
-    - FULL load truncates the Silver FACT and reloads all
-      records from Bronze.
-    - INCREMENTAL load selects only rows with ModifiedDate
-      greater than the last watermark and applies SCD1 logic:
-        * UPDATE rows where row_hash has changed
-        * INSERT new SalesOrderID not present in Silver
-    - Dimension lookups:
-        * Customer (SCD2): resolved using is_active = 1 OR
-          order_date BETWEEN dwh_start_date AND dwh_end_date.
-        * SalesPerson (SCD2): same SCD2 logic as Customer.
-        * Territory (SCD1): resolved via direct business key.
-    - row_hash is used to detect changes in FACT attributes.
-    - Watermark (ModifiedDate) is updated after each load.
-    - Quarantine is applied via etl.rejected to exclude
-      invalid Bronze rows before loading Silver.
+Dimension lookups:
+    - Customer (SCD2) and SalesPerson (SCD2): by date range ONLY
+          order_date >= dwh_start_date AND order_date < dwh_end_date
+      The first version of every SCD2 row must start at 1900-01-01.
+    - Territory (SCD1): by business key.
+    - Key missing or NULL -> -1 (unknown member). The -1 row must
+      exist in every dimension.
 
-SCD Type:
-    - FACT: SCD Type 1 (overwrite changes)
-    - Customer: SCD Type 2
-    - SalesPerson: SCD Type 2
-    - Territory: SCD Type 1
+Rules:
+    - FACT: business key (SalesOrderID) is the PK, no surrogate key.
+    - No ROW_NUMBER: duplicated keys are rejected by the Bronze
+      quality check (etl.rejected) and excluded here. This works
+      if Bronze holds ONE row per SalesOrderID.
+    - Quarantine: rows in etl.rejected for this batch are excluded.
+    - Run order in the batch: Bronze, dimensions, THIS procedure,
+      Silver detail, Gold.
+    - Surrogate keys already stored are not recalculated unless the
+      row changes: after changing dimension logic, run a FULL load.
+    - Deleted rows are not detected: schedule a periodic FULL.
 */
 
 USE [DWH_AdventureWorks2025]
@@ -48,7 +45,7 @@ GO
 SET QUOTED_IDENTIFIER ON
 GO
 
-ALTER PROCEDURE [etl].[usp_load_silver_sales_order_header]
+CREATE OR ALTER PROCEDURE [etl].[usp_load_silver_sales_order_header]
     @batch_id BIGINT
 AS
 BEGIN
@@ -127,24 +124,24 @@ BEGIN
                 cte.*,
                 HASHBYTES('SHA2_256',
                     CONCAT_WS('|',
-                        CAST(cte.sales_order_id   AS VARCHAR(20)),
-                        CAST(cte.order_date       AS VARCHAR(30)),
-                        CAST(cte.due_date         AS VARCHAR(30)),
-                        CAST(cte.ship_date        AS VARCHAR(30)),
-                        CAST(cte.status           AS VARCHAR(10)),
+                        CAST(cte.sales_order_id    AS VARCHAR(20)),
+                        CAST(cte.order_date        AS VARCHAR(30)),
+                        CAST(cte.due_date          AS VARCHAR(30)),
+                        CAST(cte.ship_date         AS VARCHAR(30)),
+                        CAST(cte.status            AS VARCHAR(10)),
                         CAST(cte.online_order_flag AS VARCHAR(10)),
                         cte.sales_order_number,
                         cte.purchase_order_number,
                         cte.account_number,
-                        CAST(cte.customer_id      AS VARCHAR(20)),
-                        CAST(cte.sales_person_id  AS VARCHAR(20)),
-                        CAST(cte.territory_id     AS VARCHAR(20)),
-                        CAST(cte.currency_rate_id AS VARCHAR(20)),
-                        CAST(cte.sub_total        AS VARCHAR(50)),
-                        CAST(cte.tax_amount       AS VARCHAR(50)),
-                        CAST(cte.freight          AS VARCHAR(50)),
-                        CAST(cte.total_due        AS VARCHAR(50)),
-                        CAST(cte.modified_date    AS VARCHAR(30))
+                        CAST(cte.customer_id       AS VARCHAR(20)),
+                        CAST(cte.sales_person_id   AS VARCHAR(20)),
+                        CAST(cte.territory_id      AS VARCHAR(20)),
+                        CAST(cte.currency_rate_id  AS VARCHAR(20)),
+                        CAST(cte.sub_total         AS VARCHAR(50)),
+                        CAST(cte.tax_amount        AS VARCHAR(50)),
+                        CAST(cte.freight           AS VARCHAR(50)),
+                        CAST(cte.total_due         AS VARCHAR(50)),
+                        CAST(cte.modified_date     AS VARCHAR(30))
                     )
                 ) AS row_hash
             INTO #src_full
@@ -164,9 +161,7 @@ BEGIN
 
                 TRUNCATE TABLE silver.erp_sales_order_header;
 
-                -----------------------------------------------------
-                -- Lookup SKs
-                -----------------------------------------------------
+                -- Lookup SKs + INSERT (single statement: the CTE is valid here)
                 ;WITH src_lkp AS (
                     SELECT
                         f.*,
@@ -176,16 +171,12 @@ BEGIN
                     FROM #src_full f
                     LEFT JOIN silver.erp_customer c
                         ON f.customer_id = c.customer_id
-                       AND (
-                            c.is_active = 1
-                            OR (f.order_date >= c.dwh_start_date AND f.order_date < c.dwh_end_date)
-                       )
+                       AND f.order_date >= c.dwh_start_date
+                       AND f.order_date <  c.dwh_end_date
                     LEFT JOIN silver.erp_sales_person sp
                         ON f.sales_person_id = sp.person_id
-                       AND (
-                            sp.is_active = 1
-                            OR (f.order_date >= sp.dwh_start_date AND f.order_date < sp.dwh_end_date)
-                       )
+                       AND f.order_date >= sp.dwh_start_date
+                       AND f.order_date <  sp.dwh_end_date
                     LEFT JOIN silver.erp_sales_territory t
                         ON f.territory_id = t.territory_id
                 )
@@ -254,7 +245,7 @@ BEGIN
             PRINT '>> INCREMENTAL load (SCD1) started';
 
             -----------------------------------------------------
-            -- Last Silver load timestamp
+            -- Bookmark: last time Silver wrote something
             -----------------------------------------------------
             SELECT @last_silver_load = ISNULL(MAX(dwh_load_date), '1900-01-01')
             FROM silver.erp_sales_order_header;
@@ -300,24 +291,24 @@ BEGIN
                 cte.*,
                 HASHBYTES('SHA2_256',
                     CONCAT_WS('|',
-                        CAST(cte.sales_order_id   AS VARCHAR(20)),
-                        CAST(cte.order_date       AS VARCHAR(30)),
-                        CAST(cte.due_date         AS VARCHAR(30)),
-                        CAST(cte.ship_date        AS VARCHAR(30)),
-                        CAST(cte.status           AS VARCHAR(10)),
+                        CAST(cte.sales_order_id    AS VARCHAR(20)),
+                        CAST(cte.order_date        AS VARCHAR(30)),
+                        CAST(cte.due_date          AS VARCHAR(30)),
+                        CAST(cte.ship_date         AS VARCHAR(30)),
+                        CAST(cte.status            AS VARCHAR(10)),
                         CAST(cte.online_order_flag AS VARCHAR(10)),
                         cte.sales_order_number,
                         cte.purchase_order_number,
                         cte.account_number,
-                        CAST(cte.customer_id      AS VARCHAR(20)),
-                        CAST(cte.sales_person_id  AS VARCHAR(20)),
-                        CAST(cte.territory_id     AS VARCHAR(20)),
-                        CAST(cte.currency_rate_id AS VARCHAR(20)),
-                        CAST(cte.sub_total        AS VARCHAR(50)),
-                        CAST(cte.tax_amount       AS VARCHAR(50)),
-                        CAST(cte.freight          AS VARCHAR(50)),
-                        CAST(cte.total_due        AS VARCHAR(50)),
-                        CAST(cte.modified_date    AS VARCHAR(30))
+                        CAST(cte.customer_id       AS VARCHAR(20)),
+                        CAST(cte.sales_person_id   AS VARCHAR(20)),
+                        CAST(cte.territory_id      AS VARCHAR(20)),
+                        CAST(cte.currency_rate_id  AS VARCHAR(20)),
+                        CAST(cte.sub_total         AS VARCHAR(50)),
+                        CAST(cte.tax_amount        AS VARCHAR(50)),
+                        CAST(cte.freight           AS VARCHAR(50)),
+                        CAST(cte.total_due         AS VARCHAR(50)),
+                        CAST(cte.modified_date     AS VARCHAR(30))
                     )
                 ) AS row_hash
             INTO #src_delta
@@ -336,115 +327,114 @@ BEGIN
             END
 
             -----------------------------------------------------
-            -- Lookup SKs
+            -- Lookup SKs into a temp table: it is used by BOTH
+            -- the UPDATE and the INSERT (a CTE would be valid for
+            -- one statement only)
             -----------------------------------------------------
-            ;WITH src_lkp AS (
-                SELECT
-                    d.*,
-                    COALESCE(c.customer_sk,      -1) AS customer_sk,
-                    COALESCE(sp.sales_person_sk, -1) AS person_sk,
-                    COALESCE(t.territory_sk,     -1) AS territory_sk
-                FROM #src_delta d
-                LEFT JOIN silver.erp_customer c
-                    ON d.customer_id = c.customer_id
-                   AND (
-                        c.is_active = 1
-                        OR (d.order_date >= c.dwh_start_date AND d.order_date < c.dwh_end_date)
-                   )
-                LEFT JOIN silver.erp_sales_person sp
-                    ON d.sales_person_id = sp.person_id
-                   AND (
-                        sp.is_active = 1
-                        OR (d.order_date >= sp.dwh_start_date AND d.order_date < sp.dwh_end_date)
-                   )
-                LEFT JOIN silver.erp_sales_territory t
-                    ON d.territory_id = t.territory_id
-            )
-
-            -----------------------------------------------------
-            -- UPDATE changed rows
-            -----------------------------------------------------
-            UPDATE tgt
-            SET tgt.order_date         = src.order_date,
-                tgt.due_date           = src.due_date,
-                tgt.ship_date          = src.ship_date,
-                tgt.status             = src.status,
-                tgt.online_order_flag  = src.online_order_flag,
-                tgt.sales_order_number = src.sales_order_number,
-                tgt.purchase_order_number = src.purchase_order_number,
-                tgt.account_number     = src.account_number,
-                tgt.customer_id        = src.customer_id,
-                tgt.sales_person_id    = src.sales_person_id,
-                tgt.territory_id       = src.territory_id,
-                tgt.currency_rate_id   = src.currency_rate_id,
-                tgt.sub_total          = src.sub_total,
-                tgt.tax_amount         = src.tax_amount,
-                tgt.freight            = src.freight,
-                tgt.total_due          = src.total_due,
-                tgt.modified_date      = src.modified_date,
-                tgt.customer_sk        = src.customer_sk,
-                tgt.person_sk          = src.person_sk,
-                tgt.territory_sk       = src.territory_sk,
-                tgt.row_hash           = src.row_hash,
-                tgt.dwh_load_date      = @load_ts,
-                tgt.dwh_batch_id       = @batch_id
-            FROM silver.erp_sales_order_header tgt
-            JOIN src_lkp src
-                ON tgt.sales_order_id = src.sales_order_id
-            WHERE tgt.row_hash <> src.row_hash;
-
-            SET @rows_updated = @@ROWCOUNT;
-
-            -----------------------------------------------------
-            -- INSERT new business keys
-            -----------------------------------------------------
-            INSERT INTO silver.erp_sales_order_header
-                (sales_order_id,
-                 order_date, due_date, ship_date,
-                 status, online_order_flag,
-                 sales_order_number, purchase_order_number, account_number,
-                 customer_id, sales_person_id, territory_id, currency_rate_id,
-                 sub_total, tax_amount, freight, total_due,
-                 modified_date,
-                 customer_sk, person_sk, territory_sk,
-                 row_hash,
-                 dwh_create_date, dwh_load_date, dwh_batch_id)
             SELECT
-                src.sales_order_id,
-                src.order_date,
-                src.due_date,
-                src.ship_date,
-                src.status,
-                src.online_order_flag,
-                src.sales_order_number,
-                src.purchase_order_number,
-                src.account_number,
-                src.customer_id,
-                src.sales_person_id,
-                src.territory_id,
-                src.currency_rate_id,
-                src.sub_total,
-                src.tax_amount,
-                src.freight,
-                src.total_due,
-                src.modified_date,
-                src.customer_sk,
-                src.person_sk,
-                src.territory_sk,
-                src.row_hash,
-                @load_ts,
-                @load_ts,
-                @batch_id
-            FROM src_lkp src
-            LEFT JOIN silver.erp_sales_order_header tgt
-                ON tgt.sales_order_id = src.sales_order_id
-            WHERE tgt.sales_order_id IS NULL;
+                d.*,
+                COALESCE(c.customer_sk,      -1) AS customer_sk,
+                COALESCE(sp.sales_person_sk, -1) AS person_sk,
+                COALESCE(t.territory_sk,     -1) AS territory_sk
+            INTO #src_delta_lkp
+            FROM #src_delta d
+            LEFT JOIN silver.erp_customer c
+                ON d.customer_id = c.customer_id
+               AND d.order_date >= c.dwh_start_date
+               AND d.order_date <  c.dwh_end_date
+            LEFT JOIN silver.erp_sales_person sp
+                ON d.sales_person_id = sp.person_id
+               AND d.order_date >= sp.dwh_start_date
+               AND d.order_date <  sp.dwh_end_date
+            LEFT JOIN silver.erp_sales_territory t
+                ON d.territory_id = t.territory_id;
 
-            SET @rows_inserted = @@ROWCOUNT;
+            -----------------------------------------------------
+            -- UPDATE + INSERT in one transaction
+            -----------------------------------------------------
+            BEGIN TRANSACTION;
+
+                -- UPDATE changed rows
+                UPDATE tgt
+                SET tgt.order_date            = src.order_date,
+                    tgt.due_date              = src.due_date,
+                    tgt.ship_date             = src.ship_date,
+                    tgt.status                = src.status,
+                    tgt.online_order_flag     = src.online_order_flag,
+                    tgt.sales_order_number    = src.sales_order_number,
+                    tgt.purchase_order_number = src.purchase_order_number,
+                    tgt.account_number        = src.account_number,
+                    tgt.customer_id           = src.customer_id,
+                    tgt.sales_person_id       = src.sales_person_id,
+                    tgt.territory_id          = src.territory_id,
+                    tgt.currency_rate_id      = src.currency_rate_id,
+                    tgt.sub_total             = src.sub_total,
+                    tgt.tax_amount            = src.tax_amount,
+                    tgt.freight               = src.freight,
+                    tgt.total_due             = src.total_due,
+                    tgt.modified_date         = src.modified_date,
+                    tgt.customer_sk           = src.customer_sk,
+                    tgt.person_sk             = src.person_sk,
+                    tgt.territory_sk          = src.territory_sk,
+                    tgt.row_hash              = src.row_hash,
+                    tgt.dwh_load_date         = @load_ts,
+                    tgt.dwh_batch_id          = @batch_id
+                FROM silver.erp_sales_order_header tgt
+                JOIN #src_delta_lkp src
+                    ON tgt.sales_order_id = src.sales_order_id
+                WHERE tgt.row_hash <> src.row_hash;
+
+                SET @rows_updated = @@ROWCOUNT;
+
+                -- INSERT new business keys
+                INSERT INTO silver.erp_sales_order_header
+                    (sales_order_id,
+                     order_date, due_date, ship_date,
+                     status, online_order_flag,
+                     sales_order_number, purchase_order_number, account_number,
+                     customer_id, sales_person_id, territory_id, currency_rate_id,
+                     sub_total, tax_amount, freight, total_due,
+                     modified_date,
+                     customer_sk, person_sk, territory_sk,
+                     row_hash,
+                     dwh_create_date, dwh_load_date, dwh_batch_id)
+                SELECT
+                    src.sales_order_id,
+                    src.order_date,
+                    src.due_date,
+                    src.ship_date,
+                    src.status,
+                    src.online_order_flag,
+                    src.sales_order_number,
+                    src.purchase_order_number,
+                    src.account_number,
+                    src.customer_id,
+                    src.sales_person_id,
+                    src.territory_id,
+                    src.currency_rate_id,
+                    src.sub_total,
+                    src.tax_amount,
+                    src.freight,
+                    src.total_due,
+                    src.modified_date,
+                    src.customer_sk,
+                    src.person_sk,
+                    src.territory_sk,
+                    src.row_hash,
+                    @load_ts,
+                    @load_ts,
+                    @batch_id
+                FROM #src_delta_lkp src
+                LEFT JOIN silver.erp_sales_order_header tgt
+                    ON tgt.sales_order_id = src.sales_order_id
+                WHERE tgt.sales_order_id IS NULL;
+
+                SET @rows_inserted = @@ROWCOUNT;
 
             COMMIT TRANSACTION;
 
             DROP TABLE #src_delta;
+            DROP TABLE #src_delta_lkp;
 
             SET @end_time = SYSDATETIME();
 
@@ -470,8 +460,9 @@ BEGIN
         IF @@TRANCOUNT > 0
             ROLLBACK TRANSACTION;
 
-        IF OBJECT_ID('tempdb..#src_full')  IS NOT NULL DROP TABLE #src_full;
-        IF OBJECT_ID('tempdb..#src_delta') IS NOT NULL DROP TABLE #src_delta;
+        IF OBJECT_ID('tempdb..#src_full')       IS NOT NULL DROP TABLE #src_full;
+        IF OBJECT_ID('tempdb..#src_delta')      IS NOT NULL DROP TABLE #src_delta;
+        IF OBJECT_ID('tempdb..#src_delta_lkp')  IS NOT NULL DROP TABLE #src_delta_lkp;
 
         PRINT '====================================================';
         PRINT 'ERROR during Silver load for: sales_order_header';
