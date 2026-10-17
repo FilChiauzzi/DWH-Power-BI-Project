@@ -55,6 +55,7 @@ SSIS Usage:
 
 USE [DWH_AdventureWorks2025]
 GO
+/****** Oggetto: StoredProcedure [etl].[usp_load_silver_store]    Data dello script 17/10/2026 17:26:51 ******/
 SET ANSI_NULLS ON
 GO
 SET QUOTED_IDENTIFIER ON
@@ -67,17 +68,15 @@ BEGIN
     SET NOCOUNT ON;
     SET XACT_ABORT ON;
 
-    DECLARE 
-        @batch_start_time DATETIME2(3) = SYSDATETIME(),
-        @start_time       DATETIME2(3),
-        @end_time         DATETIME2(3),
-        @load_ts          DATETIME2(3) = SYSDATETIME(),
-        @load_type        VARCHAR(20),
-        @last_wm          DATETIME,
-        @new_wm           DATETIME,
-        @rows_src         INT = 0,
-        @rows_updated     INT = 0,
-        @rows_inserted    INT = 0;
+    DECLARE
+        @start_time        DATETIME2(3),
+        @end_time          DATETIME2(3),
+        @load_ts           DATETIME2(3) = SYSDATETIME(),
+        @load_type         VARCHAR(20),
+        @last_silver_load  DATETIME2(3),
+        @rows_src          INT = 0,
+        @rows_updated      INT = 0,
+        @rows_inserted     INT = 0;
 
     BEGIN TRY
         SET @start_time = SYSDATETIME();
@@ -86,8 +85,7 @@ BEGIN
         -- Read configuration
         ---------------------------------------------------------
         SELECT 
-            @load_type = load_type,
-            @last_wm   = last_watermark_value
+            @load_type = load_type
         FROM etl.config
         WHERE object_name = 'store'
           AND is_active = 1;
@@ -113,6 +111,16 @@ BEGIN
 
                 ALTER SEQUENCE dwh.seq_silver_store RESTART WITH 1;
 
+                -------------------------------------------------------
+                -- INSERT UNKNOW MEMBER - OPTIMIZATION PERFORMANCE JOIN 
+                -------------------------------------------------------
+               IF NOT EXISTS (SELECT 1 FROM silver.erp_store WHERE store_sk = -1)
+                INSERT INTO silver.erp_store ( 
+                    store_sk, store_id, store_name, row_hash, dwh_create_date, dwh_load_date, dwh_batch_id
+                    )
+                VALUES ( -1, -1, 'Unknown', NULL, @load_ts,@load_ts, -1);
+
+
                 ---------------------------------------------------------
                 -- Build FULL source set (#src_full)
                 ---------------------------------------------------------
@@ -121,7 +129,7 @@ BEGIN
                     CASE
                         WHEN b.[Name] IS NULL OR LTRIM(RTRIM(b.[Name])) = '' 
                             THEN 'Unknown'
-                        ELSE LTRIM(RTRIM(b.[Name]))
+                        ELSE TRIM(b.[Name])
                     END AS store_name,
                     HASHBYTES('SHA2_256',
                         CONCAT_WS('|',
@@ -129,7 +137,7 @@ BEGIN
                             CASE
                                 WHEN b.[Name] IS NULL OR LTRIM(RTRIM(b.[Name])) = '' 
                                     THEN 'Unknown'
-                                ELSE LTRIM(RTRIM(b.[Name]))
+                                ELSE TRIM(b.[Name])
                             END
                         )
                     ) AS row_hash,
@@ -189,7 +197,14 @@ BEGIN
         BEGIN
             PRINT '>> INCREMENTAL load (SCD1) started';
 
-            BEGIN TRANSACTION;
+            -----------------------------------------------------
+            -- Bookmark: last time Silver wrote something
+            -- (empty Silver -> 1900, so everything is read)
+            -----------------------------------------------------
+            SELECT @last_silver_load = ISNULL(MAX(dwh_load_date), '1900-01-01')
+            FROM silver.erp_subcategory;
+
+            PRINT '>> Last Silver load: ' + CONVERT(NVARCHAR(30), @last_silver_load, 121);
 
                 ---------------------------------------------------------
                 -- Build DELTA source set (#src_delta)
@@ -199,7 +214,7 @@ BEGIN
                     CASE
                         WHEN b.[Name] IS NULL OR LTRIM(RTRIM(b.[Name])) = '' 
                             THEN 'Unknown'
-                        ELSE LTRIM(RTRIM(b.[Name]))
+                        ELSE TRIM(b.[Name])
                     END AS store_name,
                     HASHBYTES('SHA2_256',
                         CONCAT_WS('|',
@@ -207,14 +222,14 @@ BEGIN
                             CASE
                                 WHEN b.[Name] IS NULL OR LTRIM(RTRIM(b.[Name])) = '' 
                                     THEN 'Unknown'
-                                ELSE LTRIM(RTRIM(b.[Name]))
+                                ELSE TRIM(b.[Name])
                             END
                         )
                     ) AS row_hash,
                     b.ModifiedDate
                 INTO #src_delta
                 FROM bronze.erp_store AS b
-                WHERE b.ModifiedDate > @last_wm
+                WHERE b.dwh_load_date > @last_silver_load
                   AND NOT EXISTS (
                         SELECT 1
                         FROM etl.rejected AS r
@@ -242,6 +257,7 @@ BEGIN
                     RETURN;
                 END
 
+               BEGIN TRANSACTION;
                 ---------------------------------------------------------
                 -- UPDATE changed rows
                 ---------------------------------------------------------
@@ -272,23 +288,11 @@ BEGIN
                     @load_ts,
                     @batch_id
                 FROM #src_delta AS src
-                WHERE NOT EXISTS (
-                    SELECT 1
-                    FROM silver.erp_store AS tgt
-                    WHERE tgt.store_id = src.store_id
-                );
+                LEFT JOIN silver.erp_store AS tgt
+                    ON tgt.store_id = src.store_id
+                WHERE tgt.store_id IS NULL;
 
                 SET @rows_inserted = @@ROWCOUNT;
-
-                ---------------------------------------------------------
-                -- Update watermark
-                ---------------------------------------------------------
-                SELECT @new_wm = MAX(ModifiedDate) FROM #src_delta;
-
-                UPDATE etl.config
-                SET last_watermark_value = @new_wm
-                WHERE object_name = 'store'
-                  AND is_active = 1;
 
             COMMIT TRANSACTION;
 
@@ -332,4 +336,3 @@ BEGIN
         THROW;
     END CATCH
 END;
-GO
