@@ -202,7 +202,7 @@ BEGIN
             -- (empty Silver -> 1900, so everything is read)
             -----------------------------------------------------
             SELECT @last_silver_load = ISNULL(MAX(dwh_load_date), '1900-01-01')
-            FROM silver.erp_subcategory;
+            FROM silver.erp_store;
 
             PRINT '>> Last Silver load: ' + CONVERT(NVARCHAR(30), @last_silver_load, 121);
 
