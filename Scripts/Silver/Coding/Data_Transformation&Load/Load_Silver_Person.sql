@@ -64,13 +64,13 @@ Prerequisite:
 
 USE [DWH_AdventureWorks2025]
 GO
-/****** Oggetto: StoredProcedure [etl].[usp_load_silver_person]    Data dello script 17/10/2026 18:16:17 ******/
+
 SET ANSI_NULLS ON
 GO
 SET QUOTED_IDENTIFIER ON
 GO
 
-ALTER PROCEDURE [etl].[usp_load_silver_person]
+CREATE OR ALTER PROCEDURE [etl].[usp_load_silver_person]
     @batch_id BIGINT
 AS
 BEGIN
