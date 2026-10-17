@@ -41,6 +41,13 @@ SSIS Usage:
 */
 
 
+USE [DWH_AdventureWorks2025]
+GO
+/****** Oggetto: StoredProcedure [etl].[usp_load_silver_category]    Data dello script 17/10/2026 16:29:22 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
 ALTER PROCEDURE [etl].[usp_load_silver_category]
     @batch_id BIGINT
 AS
@@ -69,7 +76,7 @@ BEGIN
             CASE
                 WHEN b.[Name] IS NULL OR LTRIM(RTRIM(b.[Name])) = ''
                     THEN 'Unknown'
-                ELSE LTRIM(RTRIM(b.[Name]))
+                ELSE TRIM(b.[Name])
             END AS category_name,
 
             HASHBYTES('SHA2_256',
@@ -78,7 +85,7 @@ BEGIN
                     CASE
                         WHEN b.[Name] IS NULL OR LTRIM(RTRIM(b.[Name])) = ''
                             THEN 'Unknown'
-                        ELSE LTRIM(RTRIM(b.[Name]))
+                        ELSE TRIM(b.[Name])
                     END
                 )
             ) AS row_hash
@@ -152,6 +159,6 @@ BEGIN
         THROW;
     END CATCH
 END;
-GO
+
 
 
