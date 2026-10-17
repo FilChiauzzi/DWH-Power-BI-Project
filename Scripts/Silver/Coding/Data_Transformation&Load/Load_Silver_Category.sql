@@ -48,7 +48,7 @@ SET ANSI_NULLS ON
 GO
 SET QUOTED_IDENTIFIER ON
 GO
-ALTER PROCEDURE [etl].[usp_load_silver_category]
+CREATE OR ALTER PROCEDURE [etl].[usp_load_silver_category]
     @batch_id BIGINT
 AS
 BEGIN
@@ -113,6 +113,23 @@ BEGIN
 
             TRUNCATE TABLE silver.erp_category;
 
+            -------------------------------------------------------
+            -- INSERT UNKNOW MEMBER - OPTIMIZATION PERFORMANCE JOIN 
+            -------------------------------------------------------
+            IF NOT EXISTS (SELECT 1 FROM silver.erp_category WHERE category_sk = -1)
+                INSERT INTO silver.erp_category (
+                    category_sk, category_id, category_name,
+                    row_hash, dwh_create_date, dwh_load_date, dwh_batch_id
+                )
+                VALUES (
+                    -1, -1, 'Unknown',
+                    NULL,@load_ts, @load_ts, -1
+                );
+
+             -------------------------------------------------------
+             -- INSERT ALL RECORDS + SURROGATE KEY
+             -------------------------------------------------------
+
             ALTER SEQUENCE dwh.seq_silver_category RESTART WITH 1;
 
             INSERT INTO silver.erp_category
@@ -159,6 +176,3 @@ BEGIN
         THROW;
     END CATCH
 END;
-
-
-
