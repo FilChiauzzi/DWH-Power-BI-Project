@@ -22,44 +22,44 @@ Notes:
 
 USE [DWH_AdventureWorks2025]
 GO
+/****** Oggetto: StoredProcedure [etl].[usp_load_silver_product]    Data dello script 17/10/2026 17:04:47 ******/
 SET ANSI_NULLS ON
 GO
 SET QUOTED_IDENTIFIER ON
 GO
 
-CREATE OR ALTER PROCEDURE [etl].[usp_load_silver_product]
+ALTER   PROCEDURE [etl].[usp_load_silver_product]
     @batch_id BIGINT
 AS
 BEGIN
     SET NOCOUNT ON;
     SET XACT_ABORT ON;
 
-    DECLARE @batch_start_time DATETIME2(3) = SYSDATETIME(),
-            @start_time       DATETIME2(3),
-            @end_time         DATETIME2(3),
-            @load_ts          DATETIME2(3) = SYSDATETIME(),
-            @load_type        VARCHAR(20),
-            @last_wm          DATETIME,
-            @new_wm           DATETIME,
-            @rows_src         INT = 0,
-            @rows_closed      INT = 0,
-            @rows_inserted    INT = 0;
+    DECLARE @start_time        DATETIME2(3),
+            @end_time          DATETIME2(3),
+            @load_ts           DATETIME2(3) = SYSDATETIME(),
+            @load_type         VARCHAR(20),
+            @last_silver_load  DATETIME2(3),
+            @rows_src          INT = 0,
+            @rows_closed       INT = 0,
+            @rows_inserted     INT = 0;
 
     BEGIN TRY
         SET @start_time = SYSDATETIME();
 
         ---------------------------------------------------------
-        -- Read configuration
+        -- Read configuration (load_type only: no watermark here)
         ---------------------------------------------------------
-        SELECT 
-            @load_type = load_type,
-            @last_wm   = last_watermark_value
+        SELECT @load_type = load_type
         FROM etl.config
         WHERE object_name = 'product'
           AND is_active = 1;
 
         IF @load_type IS NULL
             THROW 51000, 'No active configuration found for product in etl.config.', 1;
+
+        IF @load_type NOT IN ('full', 'incremental')
+            THROW 51020, 'Unsupported load type for PRODUCT.', 1;
 
         PRINT '====================================================';
         PRINT 'Silver Load – PRODUCT (SCD2) | batch: ' + CAST(@batch_id AS NVARCHAR(20));
@@ -73,17 +73,14 @@ BEGIN
         BEGIN
             PRINT '>> FULL load: truncate + reset sequence + reload';
 
-            BEGIN TRANSACTION;
-
-                TRUNCATE TABLE silver.erp_product;
-                ALTER SEQUENCE dwh.seq_silver_product RESTART WITH 1;
-
-                ---------------------------------------------------------
-                -- Build FULL source set (#src_full)
-                ---------------------------------------------------------
+            -----------------------------------------------------
+            -- Build FULL source (#src_full): one version per
+            -- ProductID (latest), after quarantine
+            -----------------------------------------------------
+            ;WITH cte AS (
                 SELECT
                     b.ProductID AS product_id,
-                    CASE WHEN b.Name IS NULL OR LTRIM(RTRIM(b.Name)) = '' 
+                    CASE WHEN b.Name IS NULL OR LTRIM(RTRIM(b.Name)) = ''
                          THEN 'Unknown' ELSE LTRIM(RTRIM(b.Name)) END AS product_name,
                     b.ProductNumber AS product_number,
                     b.MakeFlag AS make_flag,
@@ -94,14 +91,14 @@ BEGIN
                     CASE WHEN b.FinishedGoodsFlag = 1 THEN 'Salable'
                          WHEN b.FinishedGoodsFlag = 0 THEN 'Not salable'
                          ELSE 'Unknown' END AS finished_goods_flag_desc,
-                    CASE WHEN b.Color IS NULL OR LTRIM(RTRIM(b.Color)) = '' 
-                         THEN 'Unknown' ELSE LTRIM(RTRIM(b.Color)) END AS color,
+                    CASE WHEN b.Color IS NULL OR LTRIM(RTRIM(b.Color)) = ''
+                         THEN 'Unknown' ELSE TRIM(b.Color) END AS color,
                     b.SafetyStockLevel AS safety_stock_level,
                     b.ReorderPoint AS reorder_point,
                     b.StandardCost AS standard_cost,
                     b.ListPrice AS list_price,
-                    CASE WHEN b.Size IS NULL OR LTRIM(RTRIM(b.Size)) = '' 
-                         THEN 'N/A' ELSE LTRIM(RTRIM(b.Size)) END AS size,
+                    CASE WHEN b.Size IS NULL OR LTRIM(RTRIM(b.Size)) = ''
+                         THEN 'N/A' ELSE TRIM(b.Size) END AS size,
                     b.SizeUnitMeasureCode AS size_unit_measure_code,
                     CASE WHEN b.SizeUnitMeasureCode = 'CM' THEN 'Centimeters'
                          WHEN b.SizeUnitMeasureCode = 'IN' THEN 'Inches'
@@ -135,15 +132,19 @@ BEGIN
                     HASHBYTES('SHA2_256',
                         CONCAT_WS('|',
                             b.ProductID,
-                            CASE WHEN b.Name IS NULL OR LTRIM(RTRIM(b.Name)) = '' 
-                                 THEN 'Unknown' ELSE LTRIM(RTRIM(b.Name)) END,
+                            CASE WHEN b.Name IS NULL OR LTRIM(RTRIM(b.Name)) = ''
+                                 THEN 'Unknown' ELSE TRIM(b.Name) END,
                             b.ProductNumber,
                             b.MakeFlag,
                             b.FinishedGoodsFlag,
-                            CASE WHEN b.Color IS NULL OR LTRIM(RTRIM(b.Color)) = '' 
-                                 THEN 'Unknown' ELSE LTRIM(RTRIM(b.Color)) END,
-                            CASE WHEN b.Size IS NULL OR LTRIM(RTRIM(b.Size)) = '' 
-                                 THEN 'N/A' ELSE LTRIM(RTRIM(b.Size)) END,
+                            CASE WHEN b.Color IS NULL OR LTRIM(RTRIM(b.Color)) = ''
+                                 THEN 'Unknown' ELSE TRIM(b.Color) END,
+                            b.SafetyStockLevel,
+                            b.ReorderPoint,
+                            b.StandardCost,
+                            b.ListPrice,
+                            CASE WHEN b.Size IS NULL OR LTRIM(RTRIM(b.Size)) = ''
+                                 THEN 'N/A' ELSE TRIM(b.Size) END,
                             b.SizeUnitMeasureCode,
                             b.WeightUnitMeasureCode,
                             b.Weight,
@@ -153,29 +154,41 @@ BEGIN
                             b.Style,
                             CAST(b.SellStartDate AS DATE),
                             CAST(b.SellEndDate   AS DATE),
-                            sc.subcategory_sk
+                            b.ProductSubcategoryID
                         )
-                    ) AS row_hash,
-                    b.ModifiedDate
-                INTO #src_full
+                    ) AS row_hash
                 FROM bronze.erp_product AS b
                 LEFT JOIN silver.erp_subcategory AS sc
                     ON b.ProductSubcategoryID = sc.subcategory_id
-                WHERE NOT EXISTS (
+                WHERE b.ProductID IS NOT NULL
+                  AND NOT EXISTS (
                         SELECT 1
                         FROM etl.rejected AS r
                         WHERE r.batch_id    = @batch_id
                           AND r.layer        = 'bronze'
                           AND r.object_name  = 'product'
                           AND r.business_key = CAST(b.ProductID AS NVARCHAR(200))
-                      );
+                      )
+            )
+            SELECT *            -- includes rn (always 1): not used below
+            INTO #src_full
+            FROM cte;
 
-                SET @rows_src = @@ROWCOUNT;
-                PRINT '>> Source rows (FULL, after quarantine): ' + CAST(@rows_src AS NVARCHAR(20));
+            SET @rows_src = @@ROWCOUNT;
+            PRINT '>> Source rows (FULL, after quarantine): ' + CAST(@rows_src AS NVARCHAR(20));
 
-                ---------------------------------------------------------
-                -- Insert FULL (SCD2: only active rows)
-                ---------------------------------------------------------
+            -- Safety: never empty Silver because the source is empty
+            IF @rows_src = 0
+                THROW 51030, 'Bronze product is empty: FULL load stopped to avoid emptying the Silver table.', 1;
+
+            -----------------------------------------------------
+            -- TRUNCATE + INSERT in one transaction
+            -----------------------------------------------------
+            BEGIN TRANSACTION;
+
+                TRUNCATE TABLE silver.erp_product;
+                ALTER SEQUENCE dwh.seq_silver_product RESTART WITH 1;
+
                 INSERT INTO silver.erp_product
                     (product_sk, product_id, product_name, product_number,
                      make_flag, make_flag_desc,
@@ -228,7 +241,7 @@ BEGIN
                     src.product_subcategory_sk,
                     src.row_hash,
                     @load_ts,
-                    @load_ts,
+                    CAST('19000101' AS DATETIME2(3)),   -- first version: covers the past
                     DATEFROMPARTS(9999,12,31),
                     1,
                     @load_ts,
@@ -256,15 +269,24 @@ BEGIN
         ---------------------------------------------------------
         PRINT '>> INCREMENTAL load (SCD2) started';
 
-        BEGIN TRANSACTION;
+        ---------------------------------------------------------
+        -- Bookmark: last time Silver wrote something
+        -- (empty Silver -> 1900, so everything is read)
+        ---------------------------------------------------------
+        SELECT @last_silver_load = ISNULL(MAX(dwh_load_date), '1900-01-01')
+        FROM silver.erp_product;
 
-            ---------------------------------------------------------
-            -- Build DELTA source set (#src_delta)
-            ---------------------------------------------------------
+        PRINT '>> Last Silver load: ' + CONVERT(NVARCHAR(30), @last_silver_load, 121);
+
+        ---------------------------------------------------------
+        -- Build DELTA (#src_delta): Bronze rows that arrived after
+        -- the last Silver load, one version per ProductID
+        ---------------------------------------------------------
+        ;WITH cte AS (
             SELECT
                 b.ProductID AS product_id,
-                CASE WHEN b.Name IS NULL OR LTRIM(RTRIM(b.Name)) = '' 
-                     THEN 'Unknown' ELSE LTRIM(RTRIM(b.Name)) END AS product_name,
+                CASE WHEN b.Name IS NULL OR LTRIM(RTRIM(b.Name)) = ''
+                     THEN 'Unknown' ELSE TRIM(b.Name) END AS product_name,
                 b.ProductNumber AS product_number,
                 b.MakeFlag AS make_flag,
                 CASE WHEN b.MakeFlag = 1 THEN 'Manufactured'
@@ -274,14 +296,14 @@ BEGIN
                 CASE WHEN b.FinishedGoodsFlag = 1 THEN 'Salable'
                      WHEN b.FinishedGoodsFlag = 0 THEN 'Not salable'
                      ELSE 'Unknown' END AS finished_goods_flag_desc,
-                CASE WHEN b.Color IS NULL OR LTRIM(RTRIM(b.Color)) = '' 
-                     THEN 'Unknown' ELSE LTRIM(RTRIM(b.Color)) END AS color,
+                CASE WHEN b.Color IS NULL OR LTRIM(RTRIM(b.Color)) = ''
+                     THEN 'Unknown' ELSE TRIM(b.Color) END AS color,
                 b.SafetyStockLevel AS safety_stock_level,
                 b.ReorderPoint AS reorder_point,
                 b.StandardCost AS standard_cost,
                 b.ListPrice AS list_price,
-                CASE WHEN b.Size IS NULL OR LTRIM(RTRIM(b.Size)) = '' 
-                     THEN 'N/A' ELSE LTRIM(RTRIM(b.Size)) END AS size,
+                CASE WHEN b.Size IS NULL OR LTRIM(RTRIM(b.Size)) = ''
+                     THEN 'N/A' ELSE TRIM(b.Size) END AS size,
                 b.SizeUnitMeasureCode AS size_unit_measure_code,
                 CASE WHEN b.SizeUnitMeasureCode = 'CM' THEN 'Centimeters'
                      WHEN b.SizeUnitMeasureCode = 'IN' THEN 'Inches'
@@ -315,14 +337,18 @@ BEGIN
                 HASHBYTES('SHA2_256',
                     CONCAT_WS('|',
                         b.ProductID,
-                        CASE WHEN b.Name IS NULL OR LTRIM(RTRIM(b.Name)) = '' 
+                        CASE WHEN b.Name IS NULL OR LTRIM(RTRIM(b.Name)) = ''
                              THEN 'Unknown' ELSE LTRIM(RTRIM(b.Name)) END,
                         b.ProductNumber,
                         b.MakeFlag,
                         b.FinishedGoodsFlag,
-                        CASE WHEN b.Color IS NULL OR LTRIM(RTRIM(b.Color)) = '' 
+                        CASE WHEN b.Color IS NULL OR LTRIM(RTRIM(b.Color)) = ''
                              THEN 'Unknown' ELSE LTRIM(RTRIM(b.Color)) END,
-                        CASE WHEN b.Size IS NULL OR LTRIM(RTRIM(b.Size)) = '' 
+                        b.SafetyStockLevel,
+                        b.ReorderPoint,
+                        b.StandardCost,
+                        b.ListPrice,
+                        CASE WHEN b.Size IS NULL OR LTRIM(RTRIM(b.Size)) = ''
                              THEN 'N/A' ELSE LTRIM(RTRIM(b.Size)) END,
                         b.SizeUnitMeasureCode,
                         b.WeightUnitMeasureCode,
@@ -333,15 +359,19 @@ BEGIN
                         b.Style,
                         CAST(b.SellStartDate AS DATE),
                         CAST(b.SellEndDate   AS DATE),
-                        sc.subcategory_sk
+                        b.ProductSubcategoryID
                     )
                 ) AS row_hash,
-                b.ModifiedDate
-            INTO #src_delta
+                CASE WHEN EXISTS (
+                         SELECT 1
+                         FROM silver.erp_product AS p
+                         WHERE p.product_id = b.ProductID
+                     ) THEN 0 ELSE 1 END AS is_new_product
             FROM bronze.erp_product AS b
             LEFT JOIN silver.erp_subcategory AS sc
                 ON b.ProductSubcategoryID = sc.subcategory_id
-            WHERE b.ModifiedDate > @last_wm
+            WHERE b.dwh_load_date > @last_silver_load
+              AND b.ProductID IS NOT NULL
               AND NOT EXISTS (
                     SELECT 1
                     FROM etl.rejected AS r
@@ -349,28 +379,36 @@ BEGIN
                       AND r.layer        = 'bronze'
                       AND r.object_name  = 'product'
                       AND r.business_key = CAST(b.ProductID AS NVARCHAR(200))
-                  );
+                  )
+        )
+        SELECT *            -- includes rn (always 1): not used below
+        INTO #src_delta
+        FROM cte;
 
-            SET @rows_src = @@ROWCOUNT;
-            PRINT '>> Delta rows (after quarantine): ' + CAST(@rows_src AS NVARCHAR(20));
+        SET @rows_src = @@ROWCOUNT;
+        PRINT '>> Delta rows (after quarantine): ' + CAST(@rows_src AS NVARCHAR(20));
 
-            IF @rows_src = 0
-            BEGIN
-                PRINT '>> No delta found. Nothing to do.';
-                DROP TABLE #src_delta;
-                ROLLBACK TRANSACTION;
+        IF @rows_src = 0
+        BEGIN
+            PRINT '>> No delta found. Nothing to do.';
+            DROP TABLE #src_delta;
 
-                SET @end_time = SYSDATETIME();
-                PRINT '>> INCREMENTAL load completed (no changes)';
-                PRINT '>> Duration: ' +
-                      CAST(DATEDIFF(MILLISECOND, @start_time, @end_time) AS NVARCHAR(20)) + ' ms';
-                PRINT '====================================================';
-                RETURN;
-            END
+            SET @end_time = SYSDATETIME();
+            PRINT '>> INCREMENTAL load completed (no changes)';
+            PRINT '>> Duration: ' +
+                  CAST(DATEDIFF(MILLISECOND, @start_time, @end_time) AS NVARCHAR(20)) + ' ms';
+            PRINT '====================================================';
+            RETURN;
+        END
 
-            ---------------------------------------------------------
-            -- Close old versions (SCD2)
-            ---------------------------------------------------------
+        ---------------------------------------------------------
+        -- Close + insert in one transaction
+        ---------------------------------------------------------
+        BEGIN TRANSACTION;
+
+            -----------------------------------------------------
+            -- 1) Close the active version when the hash changed
+            -----------------------------------------------------
             UPDATE tgt
             SET tgt.dwh_end_date   = @load_ts,
                 tgt.is_active      = 0,
@@ -384,9 +422,13 @@ BEGIN
 
             SET @rows_closed = @@ROWCOUNT;
 
-            ---------------------------------------------------------
-            -- Insert new versions (SCD2)
-            ---------------------------------------------------------
+            -----------------------------------------------------
+            -- 2) Insert a new active version ONLY for products
+            --    that have no active row now: changed products
+            --    (just closed) and brand-new products.
+            --    Unchanged products keep their active row and
+            --    are skipped (no duplicates).
+            -----------------------------------------------------
             INSERT INTO silver.erp_product
                 (product_sk, product_id, product_name, product_number,
                  make_flag, make_flag_desc,
@@ -439,24 +481,20 @@ BEGIN
                 src.product_subcategory_sk,
                 src.row_hash,
                 @load_ts,
-                @load_ts,
+                CASE WHEN src.is_new_product = 1
+                     THEN CAST('19000101' AS DATETIME2(3))   -- first version: covers the past
+                     ELSE @load_ts END,                      -- new version: starts now
                 DATEFROMPARTS(9999,12,31),
                 1,
                 @load_ts,
                 @batch_id
-            FROM #src_delta AS src;
+            FROM #src_delta AS src
+            LEFT JOIN silver.erp_product AS tgt
+                ON tgt.product_id = src.product_id
+               AND tgt.is_active = 1
+            WHERE tgt.product_id IS NULL;
 
             SET @rows_inserted = @@ROWCOUNT;
-
-            ---------------------------------------------------------
-            -- Update watermark
-            ---------------------------------------------------------
-            SELECT @new_wm = MAX(ModifiedDate) FROM #src_delta;
-
-            UPDATE etl.config
-            SET last_watermark_value = @new_wm
-            WHERE object_name = 'product'
-              AND is_active = 1;
 
         COMMIT TRANSACTION;
 
@@ -494,4 +532,3 @@ BEGIN
         THROW;
     END CATCH
 END;
-GO
