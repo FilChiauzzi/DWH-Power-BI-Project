@@ -83,6 +83,7 @@ Prerequisite:
 
 USE [DWH_AdventureWorks2025]
 GO
+/****** Oggetto: StoredProcedure [etl].[usp_load_silver_customer]    Data dello script 17/10/2026 18:33:55 ******/
 SET ANSI_NULLS ON
 GO
 SET QUOTED_IDENTIFIER ON
@@ -95,25 +96,23 @@ BEGIN
     SET NOCOUNT ON;
     SET XACT_ABORT ON;
 
-    DECLARE
-        @batch_start_time DATETIME2(3) = SYSDATETIME(),
-        @start_time       DATETIME2(3),
-        @end_time         DATETIME2(3),
-        @load_ts          DATETIME2(3) = SYSDATETIME(),
-        @load_type        VARCHAR(20),
-        @last_wm          DATETIME,
-        @new_wm           DATETIME,
-        @rows_src         INT = 0,
-        @rows_closed      INT = 0,
-        @rows_inserted    INT = 0;
+    DECLARE @start_time        DATETIME2(3),
+            @end_time          DATETIME2(3),
+            @load_ts           DATETIME2(3) = SYSDATETIME(),
+            @load_type         VARCHAR(20),
+            @last_silver_load  DATETIME2(3),
+            @rows_src          INT = 0,
+            @rows_closed       INT = 0,
+            @rows_inserted     INT = 0;
 
     BEGIN TRY
+    SET @start_time = SYSDATETIME();
+
         ---------------------------------------------------------
         -- Read configuration
         ---------------------------------------------------------
         SELECT 
-            @load_type = load_type,
-            @last_wm   = last_watermark_value
+            @load_type = load_type
         FROM etl.config
         WHERE object_name = 'customer'
           AND is_active = 1;
@@ -131,13 +130,7 @@ BEGIN
         ---------------------------------------------------------
         IF @load_type = 'full'
         BEGIN
-            SET @start_time = SYSDATETIME();
-
-            BEGIN TRANSACTION;
-
-                TRUNCATE TABLE silver.erp_customer;
-
-                ALTER SEQUENCE dwh.seq_silver_customer RESTART WITH 1;
+            PRINT '>> FULL load: truncate + reset sequence + reload';
 
                 ---------------------------------------------------------
                 -- Build FULL source set (#src_full)
@@ -147,17 +140,14 @@ BEGIN
                     c.PersonID   AS person_id,
                     c.StoreID    AS store_id,
                     c.TerritoryID AS territory_id,
-
                     CASE
                         WHEN c.PersonID IS NULL AND c.StoreID IS NOT NULL THEN 'store'
                         WHEN c.PersonID IS NOT NULL AND c.StoreID IS NOT NULL THEN 'store contact'
                         ELSE 'individual customer'
                     END AS customer_type,
-
-                    COALESCE(p.person_sk, -1)     AS person_sk,
-                    COALESCE(s.store_sk, -1)      AS store_sk,
-                    COALESCE(t.territory_sk, -1)  AS territory_sk,
-
+                    p.person_sk,
+                    s.store_sk,
+                    t.territory_sk,
                     HASHBYTES('SHA2_256',
                         CONCAT_WS('|',
                             c.PersonID,
@@ -165,9 +155,7 @@ BEGIN
                             c.TerritoryID
                         )
                     ) AS row_hash,
-
                     c.ModifiedDate
-
                 INTO #src_full
                 FROM bronze.erp_customer c
                 LEFT JOIN silver.erp_person p
@@ -188,6 +176,29 @@ BEGIN
                 SELECT @rows_src = COUNT(*) FROM #src_full;
 
                 PRINT '>> Source rows (FULL, after quarantine): ' + CAST(@rows_src AS NVARCHAR(20));
+
+            -- Safety: never empty Silver because the source is empty
+            IF @rows_src = 0
+                THROW 51030, 'Bronze person is empty: FULL load stopped to avoid emptying the Silver table.', 1;
+
+            BEGIN TRANSACTION;
+
+                TRUNCATE TABLE silver.erp_customer;
+
+                ALTER SEQUENCE dwh.seq_silver_customer RESTART WITH 1;
+
+                ---------------------------------------------------------
+                -- INSERT UNKNOW MEMBER - OPTIMIZATION PERFORMANCE JOIN
+                ---------------------------------------------------------
+                IF NOT EXISTS (SELECT 1 FROM silver.erp_customer WHERE customer_sk = -1)
+                    INSERT INTO silver.erp_customer (
+                        customer_sk, customer_id, customer_type, person_sk, store_sk, territory_sk,
+                        row_hash, dwh_create_date, dwh_start_date, dwh_end_date, is_active, dwh_load_date, dwh_batch_id
+                    )
+                    VALUES (
+                        -1, -1, 'Unknown', -1, -1, -1,
+                        NULL, @load_ts, @load_ts, DATEFROMPARTS(9999,12,31), 1, @load_ts, -1
+                    );
 
                 ---------------------------------------------------------
                 -- Insert FULL (SCD2)
@@ -241,7 +252,12 @@ BEGIN
 
             PRINT '>> INCREMENTAL load (SCD2) started';
 
-            BEGIN TRANSACTION;
+        ---------------------------------------------------------
+        -- Bookmark: last time Silver wrote something
+        -- (empty Silver -> 1900, so everything is read)
+        ---------------------------------------------------------
+        SELECT @last_silver_load = ISNULL(MAX(dwh_load_date), '1900-01-01')
+        FROM silver.erp_customer;
 
                 ---------------------------------------------------------
                 -- Build DELTA source set (#src_delta)
@@ -251,17 +267,14 @@ BEGIN
                     c.PersonID   AS person_id,
                     c.StoreID    AS store_id,
                     c.TerritoryID AS territory_id,
-
                     CASE
                         WHEN c.PersonID IS NULL AND c.StoreID IS NOT NULL THEN 'store'
                         WHEN c.PersonID IS NOT NULL AND c.StoreID IS NOT NULL THEN 'store contact'
                         ELSE 'individual customer'
                     END AS customer_type,
-
-                    COALESCE(p.person_sk, -1)     AS person_sk,
-                    COALESCE(s.store_sk, -1)      AS store_sk,
-                    COALESCE(t.territory_sk, -1)  AS territory_sk,
-
+                    p.person_sk,
+                    s.store_sk,
+                    t.territory_sk,
                     HASHBYTES('SHA2_256',
                         CONCAT_WS('|',
                             c.PersonID,
@@ -269,9 +282,7 @@ BEGIN
                             c.TerritoryID
                         )
                     ) AS row_hash,
-
                     c.ModifiedDate
-
                 INTO #src_delta
                 FROM bronze.erp_customer c
                 LEFT JOIN silver.erp_person p
@@ -280,7 +291,7 @@ BEGIN
                     ON c.StoreID = s.store_id
                 LEFT JOIN silver.erp_sales_territory t
                     ON c.TerritoryID = t.territory_id
-                WHERE c.ModifiedDate > @last_wm
+                WHERE c.dwh_load_date > @last_silver_load
                   AND NOT EXISTS (
                         SELECT 1
                         FROM etl.rejected r
@@ -308,6 +319,7 @@ BEGIN
                     RETURN;
                 END
 
+                BEGIN TRANSACTION;
                 ---------------------------------------------------------
                 -- Close previous versions (SCD2)
                 ---------------------------------------------------------
@@ -349,25 +361,12 @@ BEGIN
                     @load_ts,
                     @batch_id
                 FROM #src_delta src
-                WHERE NOT EXISTS (
-                    SELECT 1
-                    FROM silver.erp_customer tgt
-                    WHERE tgt.customer_id = src.customer_id
+                LEFT JOIN silver.erp_customer tgt
+                    ON tgt.customer_id = src.customer_id
                       AND tgt.is_active = 1
-                      AND tgt.row_hash = src.row_hash
-                );
+                WHERE tgt.customer_id IS NULL;
 
                 SET @rows_inserted = @@ROWCOUNT;
-
-                ---------------------------------------------------------
-                -- Update watermark
-                ---------------------------------------------------------
-                SELECT @new_wm = MAX(ModifiedDate) FROM #src_delta;
-
-                UPDATE etl.config
-                SET last_watermark_value = @new_wm
-                WHERE object_name = 'customer'
-                  AND is_active = 1;
 
             COMMIT TRANSACTION;
 
@@ -411,4 +410,3 @@ BEGIN
         THROW;
     END CATCH
 END;
-GO
