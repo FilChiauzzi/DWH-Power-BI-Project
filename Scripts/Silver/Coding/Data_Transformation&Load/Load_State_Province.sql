@@ -49,40 +49,41 @@ Warning:
     successfully before executing this load.
 */
 
-CREATE OR ALTER PROCEDURE [etl].[usp_load_silver_state_province]
+USE [DWH_AdventureWorks2025]
+GO
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+ALTER PROCEDURE [etl].[usp_load_silver_state_province]
     @batch_id BIGINT
 AS
 BEGIN
     SET NOCOUNT ON;
     SET XACT_ABORT ON;
 
-    DECLARE 
-        @batch_start_time DATETIME2(3) = SYSDATETIME(),
-        @start_time       DATETIME2(3),
-        @end_time         DATETIME2(3),
-        @load_ts          DATETIME2(3) = SYSDATETIME(),
-        @load_type        VARCHAR(20),
-        @last_wm          DATETIME,
-        @new_wm           DATETIME,
-        @rows_src         INT = 0,
-        @rows_updated     INT = 0,
-        @rows_inserted    INT = 0;
+    DECLARE
+        @start_time        DATETIME2(3),
+        @end_time          DATETIME2(3),
+        @load_ts           DATETIME2(3) = SYSDATETIME(),
+        @load_type         VARCHAR(20),
+        @last_silver_load  DATETIME2(3),
+        @rows_src          INT = 0,
+        @rows_updated      INT = 0,
+        @rows_inserted     INT = 0;
 
     BEGIN TRY
-        SET @start_time = SYSDATETIME();
-
         ---------------------------------------------------------
-        -- Read configuration
+        -- Read configuration (load_type only)
         ---------------------------------------------------------
-        SELECT 
-            @load_type = load_type,
-            @last_wm   = last_watermark_value
+        SELECT @load_type = load_type
         FROM etl.config
         WHERE object_name = 'state_province'
           AND is_active = 1;
 
         IF @load_type IS NULL
-            THROW 51000, 'No active configuration found for state_province in etl.config.', 1;
+            THROW 51000, 'No active configuration found for STATE_PROVINCE.', 1;
 
         PRINT '====================================================';
         PRINT 'Silver Load – STATE_PROVINCE (SCD1) | batch: ' + CAST(@batch_id AS NVARCHAR(20));
@@ -94,62 +95,87 @@ BEGIN
         ---------------------------------------------------------
         IF @load_type = 'full'
         BEGIN
-            PRINT '>> FULL load: truncate + reset sequence + reload';
+            SET @start_time = SYSDATETIME();
 
+            -----------------------------------------------------
+            -- Build FULL source (#src_full)
+            -----------------------------------------------------
+            ;WITH cte AS (
+                SELECT
+                    b.StateProvinceID AS state_province_id,
+                    b.StateProvinceCode AS state_province_code,
+                    b.CountryRegionCode AS country_region_code,
+                    b.TerritoryID AS territory_id,
+                    CASE
+                        WHEN b.[Name] IS NULL OR TRIM(b.[Name]) = ''
+                            THEN 'Unknown'
+                        ELSE TRIM(b.[Name])
+                    END AS name
+                FROM bronze.erp_state_province b
+                WHERE b.StateProvinceID IS NOT NULL
+                  AND NOT EXISTS (
+                        SELECT 1
+                        FROM etl.rejected r
+                        WHERE r.batch_id    = @batch_id
+                          AND r.layer        = 'bronze'
+                          AND r.object_name  = 'state_province'
+                          AND r.business_key = CAST(b.StateProvinceID AS NVARCHAR(200))
+                    )
+            )
+            SELECT
+                cte.state_province_id,
+                cte.state_province_code,
+                cte.country_region_code,
+                cte.territory_id,
+                cte.name,
+                HASHBYTES('SHA2_256',
+                    CONCAT_WS('|',
+                        CAST(cte.state_province_id AS VARCHAR(20)),
+                        cte.state_province_code,
+                        cte.country_region_code,
+                        CAST(cte.territory_id AS VARCHAR(20)),
+                        cte.name
+                    )
+                ) AS row_hash
+            INTO #src_full
+            FROM cte;
+
+            SELECT @rows_src = COUNT(*) FROM #src_full;
+
+            PRINT '>> Source rows (FULL, after quarantine): ' + CAST(@rows_src AS NVARCHAR(20));
+
+            IF @rows_src = 0
+                THROW 51030, 'Bronze state_province is empty: FULL load stopped to avoid emptying the Silver table.', 1;
+
+            -----------------------------------------------------
+            -- TRUNCATE + INSERT in one transaction
+            -----------------------------------------------------
             BEGIN TRANSACTION;
 
                 TRUNCATE TABLE silver.erp_state_province;
 
                 ALTER SEQUENCE dwh.seq_silver_state_province RESTART WITH 1;
 
-                ---------------------------------------------------------
-                -- Build FULL source set (#src_full)
-                ---------------------------------------------------------
-                SELECT
-                    b.StateProvinceID AS state_province_id,
-                    b.StateProvinceCode AS state_province_code,
-                    b.CountryRegionCode AS country_region_code,
-                    b.TerritoryID AS territory_id,
+                -------------------------------------------------------
+                -- INSERT UNKNOWN MEMBER
+                -------------------------------------------------------
+                IF NOT EXISTS (SELECT 1 FROM silver.erp_state_province WHERE state_province_sk = -1)
+                    INSERT INTO silver.erp_state_province (
+                        state_province_sk, state_province_id, state_province_code,
+                        country_region_code, country_region_sk,
+                        name, territory_id, territory_sk,
+                        row_hash, dwh_create_date, dwh_load_date, dwh_batch_id
+                    )
+                    VALUES (
+                        -1, -1, 'Unknown',
+                        'Unknown', -1,
+                        'Unknown', -1, -1,
+                        NULL, @load_ts, @load_ts, -1
+                    );
 
-                    CASE
-                        WHEN b.[Name] IS NULL OR LTRIM(RTRIM(b.[Name])) = '' 
-                            THEN 'Unknown'
-                        ELSE LTRIM(RTRIM(b.[Name]))
-                    END AS name,
-
-                    HASHBYTES('SHA2_256',
-                        CONCAT_WS('|',
-                            b.StateProvinceID,
-                            b.StateProvinceCode,
-                            b.CountryRegionCode,
-                            b.TerritoryID,
-                            CASE
-                                WHEN b.[Name] IS NULL OR LTRIM(RTRIM(b.[Name])) = '' 
-                                    THEN 'Unknown'
-                                ELSE LTRIM(RTRIM(b.[Name]))
-                            END
-                        )
-                    ) AS row_hash,
-
-                    b.ModifiedDate
-                INTO #src_full
-                FROM bronze.erp_state_province AS b
-                WHERE NOT EXISTS (
-                    SELECT 1
-                    FROM etl.rejected AS r
-                    WHERE r.batch_id    = @batch_id
-                      AND r.layer        = 'bronze'
-                      AND r.object_name  = 'state_province'
-                      AND r.business_key = CAST(b.StateProvinceID AS NVARCHAR(200))
-                );
-
-                SELECT @rows_src = COUNT(*) FROM #src_full;
-
-                PRINT '>> Source rows (FULL, after quarantine): ' + CAST(@rows_src AS NVARCHAR(20));
-
-                ---------------------------------------------------------
-                -- Insert FULL (SCD1)
-                ---------------------------------------------------------
+                -------------------------------------------------------
+                -- INSERT ALL RECORDS + SURROGATE KEY
+                -------------------------------------------------------
                 INSERT INTO silver.erp_state_province
                     (state_province_sk, state_province_id, state_province_code,
                      country_region_code, country_region_sk,
@@ -168,7 +194,7 @@ BEGIN
                     @load_ts,
                     @load_ts,
                     @batch_id
-                FROM #src_full AS src
+                FROM #src_full src
                 LEFT JOIN silver.erp_country_region cr
                     ON src.country_region_code = cr.country_code
                 LEFT JOIN silver.erp_sales_territory tr
@@ -187,82 +213,90 @@ BEGIN
             PRINT '>> Duration: ' +
                   CAST(DATEDIFF(MILLISECOND, @start_time, @end_time) AS NVARCHAR(20)) + ' ms';
             PRINT '====================================================';
-
             RETURN;
         END
 
         ---------------------------------------------------------
-        -- INCREMENTAL LOAD
+        -- INCREMENTAL LOAD (SCD1)
         ---------------------------------------------------------
         ELSE IF @load_type = 'incremental'
         BEGIN
+            SET @start_time = SYSDATETIME();
+
             PRINT '>> INCREMENTAL load (SCD1) started';
 
-            BEGIN TRANSACTION;
+            -----------------------------------------------------
+            -- Last Silver load timestamp
+            -----------------------------------------------------
+            SELECT @last_silver_load = ISNULL(MAX(dwh_load_date), '1900-01-01')
+            FROM silver.erp_state_province;
 
-                ---------------------------------------------------------
-                -- Build DELTA source set (#src_delta)
-                ---------------------------------------------------------
+            PRINT '>> Last Silver load: ' + CONVERT(NVARCHAR(30), @last_silver_load, 121);
+
+            -----------------------------------------------------
+            -- Build DELTA (#src_delta)
+            -----------------------------------------------------
+            ;WITH cte AS (
                 SELECT
                     b.StateProvinceID AS state_province_id,
                     b.StateProvinceCode AS state_province_code,
                     b.CountryRegionCode AS country_region_code,
                     b.TerritoryID AS territory_id,
-
                     CASE
-                        WHEN b.[Name] IS NULL OR LTRIM(RTRIM(b.[Name])) = '' 
+                        WHEN b.[Name] IS NULL OR TRIM(b.[Name]) = ''
                             THEN 'Unknown'
-                        ELSE LTRIM(RTRIM(b.[Name]))
-                    END AS name,
-
-                    HASHBYTES('SHA2_256',
-                        CONCAT_WS('|',
-                            b.StateProvinceID,
-                            b.StateProvinceCode,
-                            b.CountryRegionCode,
-                            b.TerritoryID,
-                            CASE
-                                WHEN b.[Name] IS NULL OR LTRIM(RTRIM(b.[Name])) = '' 
-                                    THEN 'Unknown'
-                                ELSE LTRIM(RTRIM(b.[Name]))
-                            END
-                        )
-                    ) AS row_hash,
-
-                    b.ModifiedDate
-                INTO #src_delta
-                FROM bronze.erp_state_province AS b
-                WHERE b.ModifiedDate > @last_wm
+                        ELSE TRIM(b.[Name])
+                    END AS name
+                FROM bronze.erp_state_province b
+                WHERE b.dwh_load_date > @last_silver_load
+                  AND b.StateProvinceID IS NOT NULL
                   AND NOT EXISTS (
                         SELECT 1
-                        FROM etl.rejected AS r
+                        FROM etl.rejected r
                         WHERE r.batch_id    = @batch_id
                           AND r.layer        = 'bronze'
                           AND r.object_name  = 'state_province'
                           AND r.business_key = CAST(b.StateProvinceID AS NVARCHAR(200))
-                    );
+                    )
+            )
+            SELECT
+                cte.state_province_id,
+                cte.state_province_code,
+                cte.country_region_code,
+                cte.territory_id,
+                cte.name,
+                HASHBYTES('SHA2_256',
+                    CONCAT_WS('|',
+                        CAST(cte.state_province_id AS VARCHAR(20)),
+                        cte.state_province_code,
+                        cte.country_region_code,
+                        CAST(cte.territory_id AS VARCHAR(20)),
+                        cte.name
+                    )
+                ) AS row_hash
+            INTO #src_delta
+            FROM cte;
 
-                SELECT @rows_src = COUNT(*) FROM #src_delta;
+            SELECT @rows_src = COUNT(*) FROM #src_delta;
 
-                PRINT '>> Delta rows (after quarantine): ' + CAST(@rows_src AS NVARCHAR(20));
+            PRINT '>> Delta rows (after quarantine): ' + CAST(@rows_src AS NVARCHAR(20));
 
-                IF @rows_src = 0
-                BEGIN
-                    PRINT '>> No delta found. Nothing to do.';
-                    DROP TABLE #src_delta;
-                    ROLLBACK TRANSACTION;
+            IF @rows_src = 0
+            BEGIN
+                PRINT '>> No delta found. Nothing to do.';
+                DROP TABLE #src_delta;
+                PRINT '====================================================';
+                RETURN;
+            END
 
-                    SET @end_time = SYSDATETIME();
-                    PRINT '>> INCREMENTAL load completed (no changes)';
-                    PRINT '>> Duration: ' +
-                          CAST(DATEDIFF(MILLISECOND, @start_time, @end_time) AS NVARCHAR(20)) + ' ms';
-                    PRINT '====================================================';
-                    RETURN;
-                END
+            -----------------------------------------------------
+            -- UPDATE + INSERT in one transaction
+            -----------------------------------------------------
+            BEGIN TRANSACTION;
 
-                ---------------------------------------------------------
+                -----------------------------------------------------
                 -- UPDATE changed rows
-                ---------------------------------------------------------
+                -----------------------------------------------------
                 UPDATE tgt
                 SET tgt.state_province_code = src.state_province_code,
                     tgt.country_region_code = src.country_region_code,
@@ -273,8 +307,8 @@ BEGIN
                     tgt.row_hash            = src.row_hash,
                     tgt.dwh_load_date       = @load_ts,
                     tgt.dwh_batch_id        = @batch_id
-                FROM silver.erp_state_province AS tgt
-                INNER JOIN #src_delta AS src
+                FROM silver.erp_state_province tgt
+                INNER JOIN #src_delta src
                     ON src.state_province_id = tgt.state_province_id
                 LEFT JOIN silver.erp_country_region cr
                     ON src.country_region_code = cr.country_code
@@ -284,9 +318,9 @@ BEGIN
 
                 SET @rows_updated = @@ROWCOUNT;
 
-                ---------------------------------------------------------
+                -----------------------------------------------------
                 -- INSERT new business keys
-                ---------------------------------------------------------
+                -----------------------------------------------------
                 INSERT INTO silver.erp_state_province
                     (state_province_sk, state_province_id, state_province_code,
                      country_region_code, country_region_sk,
@@ -305,28 +339,16 @@ BEGIN
                     @load_ts,
                     @load_ts,
                     @batch_id
-                FROM #src_delta AS src
+                FROM #src_delta src
                 LEFT JOIN silver.erp_country_region cr
                     ON src.country_region_code = cr.country_code
                 LEFT JOIN silver.erp_sales_territory tr
                     ON src.territory_id = tr.territory_id
-                WHERE NOT EXISTS (
-                    SELECT 1
-                    FROM silver.erp_state_province AS tgt
-                    WHERE tgt.state_province_id = src.state_province_id
-                );
+                LEFT JOIN silver.erp_state_province tgt
+                    ON tgt.state_province_id = src.state_province_id
+                WHERE tgt.state_province_id IS NULL;
 
                 SET @rows_inserted = @@ROWCOUNT;
-
-                ---------------------------------------------------------
-                -- Update watermark
-                ---------------------------------------------------------
-                SELECT @new_wm = MAX(ModifiedDate) FROM #src_delta;
-
-                UPDATE etl.config
-                SET last_watermark_value = @new_wm
-                WHERE object_name = 'state_province'
-                  AND is_active = 1;
 
             COMMIT TRANSACTION;
 
