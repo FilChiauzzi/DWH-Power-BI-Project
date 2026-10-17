@@ -25,13 +25,13 @@ Warning:
 
 USE [DWH_AdventureWorks2025]
 GO
-
+/****** Oggetto: StoredProcedure [etl].[usp_load_silver_employee]    Data dello script 17/10/2026 18:50:55 ******/
 SET ANSI_NULLS ON
 GO
 SET QUOTED_IDENTIFIER ON
 GO
 
-CREATE OR ALTER PROCEDURE [etl].[usp_load_silver_employee]
+ALTER   PROCEDURE [etl].[usp_load_silver_employee]
     @batch_id BIGINT
 AS
 BEGIN
@@ -39,24 +39,21 @@ BEGIN
     SET XACT_ABORT ON;
 
     DECLARE
-        @batch_start_time DATETIME2(3) = SYSDATETIME(),
-        @start_time       DATETIME2(3),
-        @end_time         DATETIME2(3),
-        @load_ts          DATETIME2(3) = SYSDATETIME(),
-        @load_type        VARCHAR(20),
-        @last_wm          DATETIME,
-        @new_wm           DATETIME,
-        @rows_src         INT = 0,
-        @rows_updated     INT = 0,
-        @rows_inserted    INT = 0;
+        @start_time        DATETIME2(3),
+        @end_time          DATETIME2(3),
+        @load_ts           DATETIME2(3) = SYSDATETIME(),
+        @load_type         VARCHAR(20),
+        @last_silver_load  DATETIME2(3),
+        @rows_src          INT = 0,
+        @rows_updated      INT = 0,
+        @rows_inserted     INT = 0;
 
     BEGIN TRY
         ---------------------------------------------------------
         -- Read configuration
         ---------------------------------------------------------
         SELECT 
-            @load_type = load_type,
-            @last_wm   = last_watermark_value
+            @load_type = load_type
         FROM etl.config
         WHERE object_name = 'employee'
           AND is_active = 1;
@@ -75,12 +72,6 @@ BEGIN
         IF @load_type = 'full'
         BEGIN
             SET @start_time = SYSDATETIME();
-
-            BEGIN TRANSACTION;
-
-                TRUNCATE TABLE silver.erp_employee;
-
-                ALTER SEQUENCE dwh.seq_silver_employee RESTART WITH 1;
 
                 ---------------------------------------------------------
                 -- Build FULL source set (#src_full)
@@ -131,6 +122,29 @@ BEGIN
                 SELECT @rows_src = COUNT(*) FROM #src_full;
 
                 PRINT '>> Source rows (FULL, after quarantine): ' + CAST(@rows_src AS NVARCHAR(20));
+
+           -- Safety: never empty Silver because the source is empty
+            IF @rows_src = 0
+                THROW 51030, 'Bronze subcategory is empty: FULL load stopped to avoid emptying the Silver table.', 1;
+
+            BEGIN TRANSACTION;
+
+                TRUNCATE TABLE silver.erp_employee;
+
+                ALTER SEQUENCE dwh.seq_silver_employee RESTART WITH 1;
+
+            -------------------------------------------------------
+            -- INSERT UNKNOW MEMBER - OPTIMIZATION PERFORMANCE JOIN 
+            -------------------------------------------------------
+            IF NOT EXISTS (SELECT 1 FROM silver.erp_employee WHERE employee_sk = -1)
+                INSERT INTO silver.erp_employee (
+                    employee_sk, business_entity_id,job_title, person_sk,
+                    row_hash, dwh_create_date, dwh_load_date, dwh_batch_id
+                )
+                VALUES (
+                    -1, -1, 'Unknown', -1,
+                    NULL, SYSDATETIME(), SYSDATETIME(), -1
+                );
 
                 ---------------------------------------------------------
                 -- Insert FULL (SCD1)
@@ -185,7 +199,12 @@ BEGIN
 
             PRINT '>> INCREMENTAL load (SCD1) started';
 
-            BEGIN TRANSACTION;
+            -----------------------------------------------------
+            -- Bookmark: last time Silver wrote something
+            -- (empty Silver -> 1900, so everything is read)
+            -----------------------------------------------------
+            SELECT @last_silver_load = ISNULL(MAX(dwh_load_date), '1900-01-01')
+            FROM silver.erp_employee;
 
                 ---------------------------------------------------------
                 -- Build DELTA source set (#src_delta)
@@ -201,9 +220,7 @@ BEGIN
                     b.VacationHours,
                     b.SickLeaveHours,
                     b.CurrentFlag,
-
                     p.person_sk,
-
                     HASHBYTES('SHA2_256',
                         CONCAT_WS('|',
                             b.BusinessEntityID,
@@ -218,13 +235,12 @@ BEGIN
                             b.CurrentFlag
                         )
                     ) AS row_hash,
-
                     b.ModifiedDate
                 INTO #src_delta
                 FROM bronze.erp_employee b
                 LEFT JOIN silver.erp_person p
                     ON p.person_id = b.BusinessEntityID
-                WHERE b.ModifiedDate > @last_wm
+                WHERE b.dwh_load_date > @last_silver_load
                   AND NOT EXISTS (
                         SELECT 1
                         FROM etl.rejected r
@@ -238,20 +254,15 @@ BEGIN
 
                 PRINT '>> Delta rows (after quarantine): ' + CAST(@rows_src AS NVARCHAR(20));
 
-                IF @rows_src = 0
-                BEGIN
-                    PRINT '>> No delta found. Nothing to do.';
-                    DROP TABLE #src_delta;
-                    ROLLBACK TRANSACTION;
+            IF @rows_src = 0
+            BEGIN
+                PRINT '>> No delta found. Nothing to do.';
+                DROP TABLE #src_delta;
+                PRINT '====================================================';
+                RETURN;
+            END
 
-                    SET @end_time = SYSDATETIME();
-                    PRINT '>> INCREMENTAL load completed (no changes)';
-                    PRINT '>> Duration: ' +
-                          CAST(DATEDIFF(MILLISECOND, @start_time, @end_time) AS NVARCHAR(20)) + ' ms';
-                    PRINT '====================================================';
-                    RETURN;
-                END
-
+            BEGIN TRANSACTION;
                 ---------------------------------------------------------
                 -- UPDATE changed rows
                 ---------------------------------------------------------
@@ -302,23 +313,12 @@ BEGIN
                     @load_ts,
                     @batch_id
                 FROM #src_delta src
-                WHERE NOT EXISTS (
-                    SELECT 1
-                    FROM silver.erp_employee tgt
-                    WHERE tgt.business_entity_id = src.business_entity_id
-                );
+                LEFT JOIN  silver.erp_employee tgt
+                ON tgt.business_entity_id = src.business_entity_id
+                WHERE tgt.business_entity_id IS NULL;
 
                 SET @rows_inserted = @@ROWCOUNT;
 
-                ---------------------------------------------------------
-                -- Update watermark
-                ---------------------------------------------------------
-                SELECT @new_wm = MAX(ModifiedDate) FROM #src_delta;
-
-                UPDATE etl.config
-                SET last_watermark_value = @new_wm
-                WHERE object_name = 'employee'
-                  AND is_active = 1;
 
             COMMIT TRANSACTION;
 
@@ -362,4 +362,3 @@ BEGIN
         THROW;
     END CATCH
 END;
-GO
