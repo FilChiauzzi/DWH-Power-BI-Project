@@ -29,12 +29,12 @@ Warning:
 
 USE [DWH_AdventureWorks2025]
 GO
-/****** Oggetto: StoredProcedure [etl].[usp_load_silver_ship_method]    Data dello script 16/10/2026 10:30:46 ******/
 SET ANSI_NULLS ON
 GO
 SET QUOTED_IDENTIFIER ON
 GO
-ALTER   PROCEDURE [etl].[usp_load_silver_ship_method]
+
+CREATE OR ALTER PROCEDURE [etl].[usp_load_silver_ship_method]
     @batch_id BIGINT
 AS
 BEGIN
@@ -60,9 +60,9 @@ BEGIN
             b.ShipMethodID AS ship_method_id,
 
             CASE
-                WHEN b.Name IS NULL OR LTRIM(RTRIM(b.Name)) = ''
+                WHEN b.Name IS NULL OR TRIM(b.Name) = ''
                     THEN 'Unknown'
-                ELSE LTRIM(RTRIM(b.Name))
+                ELSE TRIM(b.Name)
             END AS ship_name,
 
             b.ShipBase AS ship_base,
@@ -71,11 +71,7 @@ BEGIN
             HASHBYTES('SHA2_256',
                 CONCAT_WS('|',
                     CAST(b.ShipMethodID AS VARCHAR(20)),
-                    CASE
-                        WHEN b.Name IS NULL OR LTRIM(RTRIM(b.Name)) = ''
-                            THEN 'Unknown'
-                        ELSE LTRIM(RTRIM(b.Name))
-                    END,
+                    CASE WHEN b.Name IS NULL OR TRIM(b.Name) = '' THEN 'Unknown' ELSE TRIM(b.Name) END,
                     CAST(ISNULL(b.ShipBase,0) AS VARCHAR(50)),
                     CAST(ISNULL(b.ShipRate,0) AS VARCHAR(50))
                 )
@@ -104,6 +100,24 @@ BEGIN
 
             TRUNCATE TABLE silver.erp_ship_method;
 
+            -------------------------------------------------------
+            -- INSERT UNKNOWN MEMBER
+            -------------------------------------------------------
+            IF NOT EXISTS (SELECT 1 FROM silver.erp_ship_method WHERE ship_method_sk = -1)
+                INSERT INTO silver.erp_ship_method (
+                    ship_method_sk, ship_method_id, ship_name,
+                    ship_base, ship_rate, row_hash,
+                    dwh_create_date, dwh_load_date, dwh_batch_id
+                )
+                VALUES (
+                    -1, -1, 'Unknown',
+                    0, 0, NULL,
+                    @load_ts, @load_ts, -1
+                );
+
+            -------------------------------------------------------
+            -- INSERT ALL RECORDS + SURROGATE KEY
+            -------------------------------------------------------
             ALTER SEQUENCE dwh.seq_silver_ship_method RESTART WITH 1;
 
             INSERT INTO silver.erp_ship_method
@@ -153,3 +167,4 @@ BEGIN
         THROW;
     END CATCH
 END;
+GO
