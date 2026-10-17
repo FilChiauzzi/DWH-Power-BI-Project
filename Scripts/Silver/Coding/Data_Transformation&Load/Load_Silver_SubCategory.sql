@@ -45,15 +45,7 @@ Notes:
     - Deleted rows are not detected: schedule a periodic FULL.
 */
 
-USE [DWH_AdventureWorks2025];
-GO
-
-SET ANSI_NULLS ON;
-GO
-SET QUOTED_IDENTIFIER ON;
-GO
-
-CREATE OR ALTER PROCEDURE [etl].[usp_load_silver_subcategory]
+CREATE OR ALTER   PROCEDURE [etl].[usp_load_silver_subcategory]
     @batch_id BIGINT
 AS
 BEGIN
@@ -106,13 +98,7 @@ BEGIN
                             THEN 'Unknown'
                         ELSE LTRIM(RTRIM(b.[Name]))
                     END AS subcategory_name,
-                    b.ProductCategoryID AS product_category_id,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY b.ProductSubcategoryID
-                        ORDER BY b.ModifiedDate DESC,
-                                 b.dwh_load_date DESC,
-                                 b.dwh_source_row_num DESC
-                    ) AS rn
+                    b.ProductCategoryID AS product_category_id
                 FROM bronze.erp_subcategory b
                 WHERE b.ProductSubcategoryID IS NOT NULL
                   AND NOT EXISTS (
@@ -136,8 +122,7 @@ BEGIN
                     )
                 ) AS row_hash
             INTO #src_full
-            FROM cte
-            WHERE cte.rn = 1;
+            FROM cte;
 
             SELECT @rows_src = COUNT(*) FROM #src_full;
 
@@ -234,13 +219,7 @@ BEGIN
                             THEN 'Unknown'
                         ELSE LTRIM(RTRIM(b.[Name]))
                     END AS subcategory_name,
-                    b.ProductCategoryID AS product_category_id,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY b.ProductSubcategoryID
-                        ORDER BY b.ModifiedDate DESC,
-                                 b.dwh_load_date DESC,
-                                 b.dwh_source_row_num DESC
-                    ) AS rn
+                    b.ProductCategoryID AS product_category_id
                 FROM bronze.erp_subcategory b
                 WHERE b.dwh_load_date > @last_silver_load
                   AND b.ProductSubcategoryID IS NOT NULL
@@ -265,8 +244,7 @@ BEGIN
                     )
                 ) AS row_hash
             INTO #src_delta
-            FROM cte
-            WHERE cte.rn = 1;
+            FROM cte;
 
             SELECT @rows_src = COUNT(*) FROM #src_delta;
 
@@ -366,4 +344,3 @@ BEGIN
         THROW;
     END CATCH
 END;
-GO
