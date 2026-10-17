@@ -170,7 +170,7 @@ BEGIN
                           AND r.business_key = CAST(b.ProductID AS NVARCHAR(200))
                       )
             )
-            SELECT *            -- includes rn (always 1): not used below
+            SELECT *            
             INTO #src_full
             FROM cte;
 
@@ -189,6 +189,22 @@ BEGIN
                 TRUNCATE TABLE silver.erp_product;
                 ALTER SEQUENCE dwh.seq_silver_product RESTART WITH 1;
 
+                ---------------------------------------------------------
+                -- INSERT UNKNOW MEMBER - OPTIMIZATION PERFORMANCE JOIN
+                ---------------------------------------------------------
+                IF NOT EXISTS (SELECT 1 FROM silver.erp_product WHERE product_sk = -1)
+                    INSERT INTO silver.erp_product (
+                        product_sk, product_id, product_name, is_active, product_subcategory_sk,
+                        row_hash, dwh_create_date, dwh_start_date, dwh_end_date, dwh_load_date, dwh_batch_id
+                    )
+                    VALUES (
+                        -1, -1, 'Unknown', 1, -1,
+                        NULL, SYSDATETIME(), SYSDATETIME(), DATEFROMPARTS(9999,12,31), SYSDATETIME(), -1
+                    );
+
+                -------------------------------------------------------
+                -- INSERT ALL RECORDS + SURROGATE KEY
+                -------------------------------------------------------
                 INSERT INTO silver.erp_product
                     (product_sk, product_id, product_name, product_number,
                      make_flag, make_flag_desc,
@@ -381,7 +397,7 @@ BEGIN
                       AND r.business_key = CAST(b.ProductID AS NVARCHAR(200))
                   )
         )
-        SELECT *            -- includes rn (always 1): not used below
+        SELECT *            
         INTO #src_delta
         FROM cte;
 
