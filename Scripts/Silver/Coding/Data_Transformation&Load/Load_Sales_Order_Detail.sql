@@ -1,3 +1,46 @@
+/*
+=========================================================
+Silver Load – Sales Order Detail (FACT, SCD1)
+=========================================================
+Purpose:
+    Loads silver.erp_sales_order_detail from
+    bronze.erp_sales_order_detail. Applies standard cleaning,
+    computes row_hash for change detection, resolves the product
+    surrogate key and performs SCD Type 1 updates.
+
+Delta logic (Bronze -> Silver):
+    Silver reads Bronze through bronze.dwh_load_date (when the
+    row ARRIVED in Bronze), not through the ERP ModifiedDate.
+    The "bookmark" is derived from the Silver table itself:
+        last Silver load = MAX(silver.erp_sales_order_detail.dwh_load_date)
+    etl.config.last_watermark_value belongs ONLY to the
+    OLTP -> Bronze step: this procedure neither reads nor
+    writes it.
+
+Product lookup (SCD2):
+    The product version is chosen with the ORDER date, which lives
+    in the Silver header:
+        h.order_date >= p.dwh_start_date AND h.order_date < p.dwh_end_date
+    The first version of every product starts at 1900-01-01.
+    Product missing, or header not found -> product_sk = -1
+    (the -1 row must exist in silver.erp_product).
+
+Rules:
+    - FACT: business key (SalesOrderID + SalesOrderDetailID) is the
+      PK, no surrogate key.
+    - No ROW_NUMBER: duplicated keys are rejected by the Bronze
+      quality check (etl.rejected) and excluded here. This works
+      if Bronze holds ONE row per (SalesOrderID, SalesOrderDetailID).
+    - Quarantine: a detail is excluded if its own key OR its header
+      is in etl.rejected for this batch. If a rejected header is
+      fixed later, its details are not re-read: run a FULL load.
+    - Run order in the batch: Bronze, dimensions, Silver header,
+      THIS procedure, Gold. The Silver header must be loaded first.
+    - Surrogate keys already stored are not recalculated unless the
+      row changes: after changing dimension logic, run a FULL load.
+    - Deleted rows are not detected: schedule a periodic FULL.
+*/
+
 USE [DWH_AdventureWorks2025]
 GO
 SET ANSI_NULLS ON
@@ -5,7 +48,7 @@ GO
 SET QUOTED_IDENTIFIER ON
 GO
 
-ALTER PROCEDURE [etl].[usp_load_silver_sales_order_detail]
+CREATE OR ALTER PROCEDURE [etl].[usp_load_silver_sales_order_detail]
     @batch_id BIGINT
 AS
 BEGIN
@@ -85,6 +128,7 @@ BEGIN
                     CONCAT_WS('|',
                         CAST(cte.sales_order_id        AS VARCHAR(20)),
                         CAST(cte.sales_order_detail_id AS VARCHAR(20)),
+                        ISNULL(cte.CarrierTrackingNumber, ''),
                         CAST(cte.OrderQty              AS VARCHAR(20)),
                         CAST(cte.product_id            AS VARCHAR(20)),
                         CAST(cte.UnitPrice             AS VARCHAR(50)),
@@ -110,20 +154,18 @@ BEGIN
 
                 TRUNCATE TABLE silver.erp_sales_order_detail;
 
-                -----------------------------------------------------
-                -- Lookup SKs (PRODUCT SCD2)
-                -----------------------------------------------------
+                -- Lookup product SK + INSERT (single statement: the CTE is valid here)
                 ;WITH src_lkp AS (
                     SELECT
                         f.*,
                         COALESCE(p.product_sk, -1) AS product_sk
                     FROM #src_full f
+                    LEFT JOIN silver.erp_sales_order_header h
+                        ON h.sales_order_id = f.sales_order_id
                     LEFT JOIN silver.erp_product p
-                        ON f.product_id = p.product_id
-                       AND (
-                            p.is_active = 1
-                            OR (f.modified_date >= p.dwh_start_date AND f.modified_date < p.dwh_end_date)
-                       )
+                        ON p.product_id = f.product_id
+                       AND h.order_date >= p.dwh_start_date
+                       AND h.order_date <  p.dwh_end_date
                 )
                 INSERT INTO silver.erp_sales_order_detail
                     (sales_order_id,
@@ -167,6 +209,8 @@ BEGIN
 
             PRINT '>> FULL load completed';
             PRINT '>> Rows inserted: ' + CAST(@rows_inserted AS NVARCHAR(20));
+            PRINT '>> Duration: ' +
+                  CAST(DATEDIFF(MILLISECOND, @start_time, @end_time) AS NVARCHAR(20)) + ' ms';
             PRINT '====================================================';
             RETURN;
         END
@@ -181,7 +225,7 @@ BEGIN
             PRINT '>> INCREMENTAL load (SCD1) started';
 
             -----------------------------------------------------
-            -- Last Silver load timestamp
+            -- Bookmark: last time Silver wrote something
             -----------------------------------------------------
             SELECT @last_silver_load = ISNULL(MAX(dwh_load_date), '1900-01-01')
             FROM silver.erp_sales_order_detail;
@@ -228,6 +272,7 @@ BEGIN
                     CONCAT_WS('|',
                         CAST(cte.sales_order_id        AS VARCHAR(20)),
                         CAST(cte.sales_order_detail_id AS VARCHAR(20)),
+                        ISNULL(cte.CarrierTrackingNumber, ''),
                         CAST(cte.OrderQty              AS VARCHAR(20)),
                         CAST(cte.product_id            AS VARCHAR(20)),
                         CAST(cte.UnitPrice             AS VARCHAR(50)),
@@ -252,94 +297,99 @@ BEGIN
             END
 
             -----------------------------------------------------
-            -- Lookup SKs (PRODUCT SCD2)
+            -- Lookup product SK into a temp table: it is used by
+            -- BOTH the UPDATE and the INSERT (a CTE would be valid
+            -- for one statement only)
             -----------------------------------------------------
-            ;WITH src_lkp AS (
-                SELECT
-                    d.*,
-                    COALESCE(p.product_sk, -1) AS product_sk
-                FROM #src_delta d
-                LEFT JOIN silver.erp_product p
-                    ON d.product_id = p.product_id
-                   AND (
-                        p.is_active = 1
-                        OR (d.modified_date >= p.dwh_start_date AND d.modified_date < p.dwh_end_date)
-                   )
-            )
-
-            -----------------------------------------------------
-            -- UPDATE changed rows
-            -----------------------------------------------------
-            UPDATE tgt
-            SET tgt.carrier_tracking_number = src.CarrierTrackingNumber,
-                tgt.order_qty               = src.OrderQty,
-                tgt.product_id              = src.product_id,
-                tgt.unit_price              = src.UnitPrice,
-                tgt.unit_price_discount     = src.UnitPriceDiscount,
-                tgt.line_total              = src.LineTotal,
-                tgt.modified_date           = src.modified_date,
-                tgt.product_sk              = src.product_sk,
-                tgt.row_hash                = src.row_hash,
-                tgt.dwh_load_date           = @load_ts,
-                tgt.dwh_batch_id            = @batch_id
-            FROM silver.erp_sales_order_detail tgt
-            JOIN src_lkp src
-                ON tgt.sales_order_id        = src.sales_order_id
-               AND tgt.sales_order_detail_id = src.sales_order_detail_id
-            WHERE tgt.row_hash <> src.row_hash;
-
-            SET @rows_updated = @@ROWCOUNT;
-
-            -----------------------------------------------------
-            -- INSERT new business keys
-            -----------------------------------------------------
-            INSERT INTO silver.erp_sales_order_detail
-                (sales_order_id,
-                 sales_order_detail_id,
-                 carrier_tracking_number,
-                 order_qty,
-                 product_id,
-                 unit_price,
-                 unit_price_discount,
-                 line_total,
-                 modified_date,
-                 product_sk,
-                 row_hash,
-                 dwh_create_date,
-                 dwh_load_date,
-                 dwh_batch_id)
             SELECT
-                src.sales_order_id,
-                src.sales_order_detail_id,
-                src.CarrierTrackingNumber,
-                src.OrderQty,
-                src.product_id,
-                src.UnitPrice,
-                src.UnitPriceDiscount,
-                src.LineTotal,
-                src.modified_date,
-                src.product_sk,
-                src.row_hash,
-                @load_ts,
-                @load_ts,
-                @batch_id
-            FROM src_lkp src
-            LEFT JOIN silver.erp_sales_order_detail tgt
-                ON tgt.sales_order_id        = src.sales_order_id
-               AND tgt.sales_order_detail_id = src.sales_order_detail_id
-            WHERE tgt.sales_order_detail_id IS NULL;
+                d.*,
+                COALESCE(p.product_sk, -1) AS product_sk
+            INTO #src_delta_lkp
+            FROM #src_delta d
+            LEFT JOIN silver.erp_sales_order_header h
+                ON h.sales_order_id = d.sales_order_id
+            LEFT JOIN silver.erp_product p
+                ON p.product_id = d.product_id
+               AND h.order_date >= p.dwh_start_date
+               AND h.order_date <  p.dwh_end_date;
 
-            SET @rows_inserted = @@ROWCOUNT;
+            -----------------------------------------------------
+            -- UPDATE + INSERT in one transaction
+            -----------------------------------------------------
+            BEGIN TRANSACTION;
+
+                -- UPDATE changed rows
+                UPDATE tgt
+                SET tgt.carrier_tracking_number = src.CarrierTrackingNumber,
+                    tgt.order_qty               = src.OrderQty,
+                    tgt.product_id              = src.product_id,
+                    tgt.unit_price              = src.UnitPrice,
+                    tgt.unit_price_discount     = src.UnitPriceDiscount,
+                    tgt.line_total              = src.LineTotal,
+                    tgt.modified_date           = src.modified_date,
+                    tgt.product_sk              = src.product_sk,
+                    tgt.row_hash                = src.row_hash,
+                    tgt.dwh_load_date           = @load_ts,
+                    tgt.dwh_batch_id            = @batch_id
+                FROM silver.erp_sales_order_detail tgt
+                JOIN #src_delta_lkp src
+                    ON tgt.sales_order_id        = src.sales_order_id
+                   AND tgt.sales_order_detail_id = src.sales_order_detail_id
+                WHERE tgt.row_hash <> src.row_hash;
+
+                SET @rows_updated = @@ROWCOUNT;
+
+                -- INSERT new business keys
+                INSERT INTO silver.erp_sales_order_detail
+                    (sales_order_id,
+                     sales_order_detail_id,
+                     carrier_tracking_number,
+                     order_qty,
+                     product_id,
+                     unit_price,
+                     unit_price_discount,
+                     line_total,
+                     modified_date,
+                     product_sk,
+                     row_hash,
+                     dwh_create_date,
+                     dwh_load_date,
+                     dwh_batch_id)
+                SELECT
+                    src.sales_order_id,
+                    src.sales_order_detail_id,
+                    src.CarrierTrackingNumber,
+                    src.OrderQty,
+                    src.product_id,
+                    src.UnitPrice,
+                    src.UnitPriceDiscount,
+                    src.LineTotal,
+                    src.modified_date,
+                    src.product_sk,
+                    src.row_hash,
+                    @load_ts,
+                    @load_ts,
+                    @batch_id
+                FROM #src_delta_lkp src
+                LEFT JOIN silver.erp_sales_order_detail tgt
+                    ON tgt.sales_order_id        = src.sales_order_id
+                   AND tgt.sales_order_detail_id = src.sales_order_detail_id
+                WHERE tgt.sales_order_detail_id IS NULL;
+
+                SET @rows_inserted = @@ROWCOUNT;
 
             COMMIT TRANSACTION;
 
             DROP TABLE #src_delta;
+            DROP TABLE #src_delta_lkp;
 
             SET @end_time = SYSDATETIME();
 
             PRINT '>> INCREMENTAL load completed';
             PRINT '>> Rows updated:  ' + CAST(@rows_updated  AS NVARCHAR(20));
             PRINT '>> Rows inserted: ' + CAST(@rows_inserted AS NVARCHAR(20));
+            PRINT '>> Duration: ' +
+                  CAST(DATEDIFF(MILLISECOND, @start_time, @end_time) AS NVARCHAR(20)) + ' ms';
             PRINT '====================================================';
         END
 
@@ -357,8 +407,9 @@ BEGIN
         IF @@TRANCOUNT > 0
             ROLLBACK TRANSACTION;
 
-        IF OBJECT_ID('tempdb..#src_full')  IS NOT NULL DROP TABLE #src_full;
-        IF OBJECT_ID('tempdb..#src_delta') IS NOT NULL DROP TABLE #src_delta;
+        IF OBJECT_ID('tempdb..#src_full')       IS NOT NULL DROP TABLE #src_full;
+        IF OBJECT_ID('tempdb..#src_delta')      IS NOT NULL DROP TABLE #src_delta;
+        IF OBJECT_ID('tempdb..#src_delta_lkp')  IS NOT NULL DROP TABLE #src_delta_lkp;
 
         PRINT '====================================================';
         PRINT 'ERROR during Silver load for: sales_order_detail';
@@ -371,3 +422,4 @@ BEGIN
         THROW;
     END CATCH
 END;
+GO
