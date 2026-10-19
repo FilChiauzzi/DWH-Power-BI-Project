@@ -1,0 +1,448 @@
+# **Naming Conventions**
+
+This document outlines the naming conventions and the standard rules used for schemas, tables, views, columns, stored procedures, sequences, constraints, variables, and other objects in the data warehouse.
+
+Every rule below is applied in the scripts of this repository. When a new object is added, follow the same rules.
+
+## **Table of Contents**
+
+1. [General Principles](#general-principles)
+2. [Table Naming Conventions](#table-naming-conventions)
+   - [Bronze Rules](#bronze-rules)
+   - [Silver Rules](#silver-rules)
+   - [Gold Rules](#gold-rules)
+3. [Column Naming Conventions](#column-naming-conventions)
+   - [Surrogate Keys](#surrogate-keys)
+   - [Business Keys](#business-keys)
+   - [Descriptive Columns](#descriptive-columns)
+   - [Technical Columns](#technical-columns)
+   - [Quality Columns](#quality-columns)
+4. [Stored Procedure](#stored-procedure-naming-conventions)
+5. [Sequences](#sequence-naming-conventions)
+6. [Quality Codes](#quality-codes)
+7. [Constraints and Indexes](#constraints-and-indexes)
+8. [ETL Framework Objects](#etl-framework-objects)
+9. [Variables, Parameters and Error Codes](#variables-parameters-and-error-codes)
+10. [Standard Values and Logic Rules](#standard-values-and-logic-rules)
+11. [Script Files and Comments](#script-files-and-comments)
+
+---
+
+## **General Principles**
+
+- **Naming Conventions**: Use snake_case, lowercase, underscores (`_`). The only exception is the column names of the Bronze layer, which keep the source names.
+- **Language**: English only.
+- **Avoid Reserved Words**: Do not use SQL reserved words or ambiguous names (`Group` becomes `continent_name`, `Name` becomes `<entity>_name`).
+- **Consistency**: Names must be deterministic across layers. The same entity has the same table name in Bronze and in Silver.
+- **Business Alignment**: Names must reflect business meaning, not technical implementation.
+- **Schemas**: One schema per role: `bronze`, `silver`, `gold`, `etl` (framework tables and procedures), `dwh` (sequences).
+
+---
+
+## **Table Naming Conventions**
+
+### **Bronze Rules**
+Raw ingestion layer. A faithful copy of the source.
+- Names start with the **source system** (`erp_`).
+- The entity is the business name of the source table in snake_case. The schema of the source is added only when the table name alone is ambiguous (`Person.Address` becomes `erp_person_address`).
+- **Column names are NOT renamed**: they keep the source names (`ProductCategoryID`, `ModifiedDate`).
+- All source columns are NULL-able and there are no constraints: quality is checked by the DQ procedures, never by the engine.
+- Pattern:  
+  **`bronze.<sourcesystem>_<entity>`**
+- Examples:  
+  - `bronze.erp_category` (from `Production.ProductCategory`)  
+  - `bronze.erp_sales_order_header` (from `Sales.SalesOrderHeader`)  
+  - `bronze.erp_person_address` (from `Person.Address`)
+
+### **Silver Rules**
+Cleaned, standardized, deduplicated.  
+- Names start with the **source system** and are **identical to the Bronze name** of the same entity.
+- Column names are snake_case and use business names (see [Column Naming Conventions](#column-naming-conventions)).
+- Pattern:  
+  **`silver.<sourcesystem>_<entity>`**
+- Examples:  
+  - `silver.erp_category`  
+  - `silver.erp_subcategory`  
+  - `silver.erp_sales_order_detail`
+
+### **Gold Rules**
+Business-aligned dimensional model.  
+- Names start with the **role** of the table.
+- Dimensions are exposed as **views** on top of Silver (prefix `vw_`); facts and the small warehouse-generated dimensions are tables.
+- Pattern:  
+  **`gold.<category>_<entity>`**
+- Examples:  
+  - `gold.vw_dim_product` (view on the SCD2 product, with subcategory and category)  
+  - `gold.vw_dim_customer`, `gold.vw_dim_geography`, `gold.vw_dim_sales_person`, `gold.vw_dim_ship_method`  
+  - `gold.fact_sales_order` (grain: one row per order line)  
+  - `gold.dwh_order_sales_status`  
+
+#### **Glossary of Category Patterns**
+
+| Pattern     | Meaning                                                              | Example(s)                                         |
+|-------------|----------------------------------------------------------------------|----------------------------------------------------|
+| `vw_dim_`   | Dimension built from Silver and exposed as a view                    | `vw_dim_product`, `vw_dim_customer`                |
+| `fact_`     | Fact table                                                           | `fact_sales_order`                                 |
+| `dwh_`      | Dimension created by the warehouse itself, with no source system     | `dwh_order_sales_status`, `dwh_order_online_order`, `dwh_dim_calendar` |
+| `report_`   | Reporting table (reserved, not used yet)                             | `report_sales_monthly`                             |
+
+---
+
+## **Column Naming Conventions**
+
+### **Surrogate Keys**
+- Suffix: **`_sk`**  
+- Pattern: **`<entity>_sk`**
+- Type `INT`, generated by the Silver load procedure from a sequence (never by SSIS and never by `IDENTITY`).
+- Example: `category_sk`, `product_sk`, `customer_sk`
+- The surrogate key **-1** is always the *Unknown* member (see [Standard Values](#standard-values-and-logic-rules)).
+- Facts have **no surrogate key**: their primary key is made of the business keys.
+- A table that points to a dimension stores both the business key and the resolved surrogate key (`customer_id` and `customer_sk`).
+
+### **Business Keys**
+- Use the natural key name from the source, in snake_case, with suffix `_id` (or `_code` when the key is a code).
+- Example: `product_id`, `category_id`, `sales_order_detail_id`, `country_code`
+- The business key is kept in Silver next to the surrogate key.
+
+### **Descriptive Columns**
+- Source abbreviations are expanded: `TaxAmt` becomes `tax_amount`, `SubTotal` becomes `sub_total`.
+- The source column `Name` becomes `<entity>_name` (`category_name`, `territory_name`).
+- Flags end with `_flag`, dates end with `_date`, counters end with `_qty`.
+- The source `rowguid` is **not** carried to Silver.
+- The source `ModifiedDate` is kept as `modified_date` with its original type (`DATETIME`): it is a change marker and must never be cast to `DATE`.
+- Gold dates are stored as `DATE`.
+
+### **Technical Columns**
+Prefix: **`dwh_`**  
+Used for metadata generated by the warehouse. The only exceptions are `row_hash` and `is_active`.
+
+| Column               | Type            | Layer          | Meaning                                                       |
+|----------------------|-----------------|----------------|---------------------------------------------------------------|
+| `dwh_load_date`      | `DATETIME2(3)`  | all            | Last time a load wrote the row (Bronze: when the row arrived) |
+| `dwh_batch_id`       | `BIGINT`        | all            | Run (`etl.batch`) that wrote the row                          |
+| `dwh_source_row_num` | `BIGINT`        | Bronze         | Position of the row in the extraction                         |
+| `dwh_create_date`    | `DATETIME2(3)`  | Silver, Gold   | When the row was created (never updated)                      |
+| `row_hash`           | `VARBINARY(32)` | Silver, Gold   | SHA2_256 fingerprint used for change detection                |
+| `dwh_start_date`     | `DATETIME2(3)`  | Silver SCD2    | Start of validity of the version                              |
+| `dwh_end_date`       | `DATETIME2(3)`  | Silver SCD2    | End of validity (`9999-12-31` = current)                      |
+| `is_active`          | `BIT`           | Silver SCD2    | 1 for the current version (only one per business key)         |
+
+Rules:
+- Technical dates are `DATETIME2(3)` and are filled with `SYSDATETIME()`.
+- Every SCD1 table has `row_hash`, `dwh_create_date`, `dwh_load_date`, `dwh_batch_id`. SCD2 tables add `dwh_start_date`, `dwh_end_date`, `is_active`.
+
+### **Quality Columns**
+Used in `etl.data_quality_log` and `etl.rejected`.
+
+`etl.data_quality_log` (every finding, warnings included):
+- `dq_log_key`  
+- `batch_id`  
+- `layer`  
+- `object_name`  
+- `check_name`  
+- `record_id`  
+- `description`  
+- `severity`  
+- `detected_at`  
+
+`etl.rejected` (the quarantine, one row per blocking problem):
+- `rejected_key`  
+- `batch_id`  
+- `layer`  
+- `object_name`  
+- `business_key`  
+- `rule_code`  
+- `rule_description`  
+- `severity`  
+- `raw_row` (the original row in JSON)  
+- `rejected_at`  
+- `replayed_at`  
+- `replayed_batch_id`  
+
+---
+
+## **Stored Procedure Naming Conventions**
+
+Stored procedures live in schema `etl` and follow the pattern:
+
+### **`usp_<action>_<layer>_<entity>`**
+
+Where:
+- `usp` = user stored procedure  
+- `<action>` = load, check  
+- `<layer>` = bronze, silver, gold  
+- `<entity>` = the entity name used in the table name (without `erp_`)  
+
+| Procedure                                      | What it does                                          | How many            |
+|------------------------------------------------|-------------------------------------------------------|---------------------|
+| `usp_load_bronze`                              | Loads any Bronze table, driven by `etl.config`        | One for all objects |
+| `usp_check_bronze_quality_load_<entity>`       | Quality check of a Bronze table, before the Silver load | One per entity    |
+| `usp_load_silver_<entity>`                     | Loads a Silver table (SCD1 or SCD2)                   | One per entity      |
+| `usp_load_gold_<entity>`                       | Loads a Gold table                                    | One per fact        |
+
+Examples:
+- `usp_load_bronze`  
+- `usp_check_bronze_quality_load_category`  
+- `usp_load_silver_category`  
+- `usp_load_gold_fact_sales_order`  
+
+Rules:
+- Quality checks are **separate** procedures from the loads: Bronze loading never rejects rows.
+- Silver SCD1 procedures reconcile with UPDATE (changed `row_hash`) + INSERT (new business key). SCD2 procedures close the active version and insert a new one.
+- FULL load = `TRUNCATE` + reload in one transaction, and it stops when the source is empty.
+- Gold SPs shape the semantic model.
+- Every procedure starts with `SET NOCOUNT ON` and `SET XACT_ABORT ON`, uses `TRY/CATCH`, rolls back and **re-throws**, so that SSIS sees the failure.
+- One script file defines one procedure and starts with the standard header (see [Script Files and Comments](#script-files-and-comments)).
+
+---
+
+## **Sequence Naming Conventions**
+
+Sequences generate surrogate keys in Silver.
+
+Pattern:
+### **`dwh.seq_<layer>_<entity>`**
+
+Examples:
+- `dwh.seq_silver_category`
+- `dwh.seq_silver_product`
+- `dwh.seq_silver_sales_person`
+- `dwh.seq_silver_person_address`
+- `dwh.seq_silver_ship_method`
+
+Rules:
+- Sequences belong to schema `dwh`, start with 1 and increase by 1.
+- One sequence per Silver dimension. Silver facts have none.
+- FULL loads restart the sequence: `ALTER SEQUENCE ... RESTART WITH 1`.
+- Incremental loads **never** reset sequences.
+- After a FULL load of a dimension, the tables that store its surrogate keys must be reloaded.
+
+---
+
+## **Quality Codes**
+
+Used in the Bronze DQ stored procedures.
+
+Standard codes (column `etl.rejected.rule_code`):
+- **`NULL_BK`** → Business key is NULL  
+- **`DUP_BK`** → Duplicate business key  
+- **`NULL_FK`** → Mandatory foreign key is NULL  
+- **`NULL_TERRITORY`** → Territory is NULL (customer)  
+- **`NULL_GROUP`** → Group is NULL or empty (sales territory)  
+- **`NULL_COUNTRY`** → Country region code is NULL or empty (sales territory)  
+- **`NULL_LINE`** → Order line key is NULL (sales order detail)  
+- **`DUP_LINE`** → Duplicate order line, the grain of the fact (sales order detail)  
+- **`QTY_INVALID`** → Quantity is not positive (sales order detail)  
+- **`NEG_PRICE`** → Price or discount is negative (sales order detail)  
+- **`LINE_MISMATCH`** → Line total is not consistent with price, discount and quantity (sales order detail)  
+
+Rules:
+- Codes must be uppercase.
+- Codes must be stable across entities: use the generic code whenever one exists.
+- Codes must be descriptive but short, in the form `<NULL|DUP>_<what>`.
+- A rule code is written only when the row is **quarantined** in `etl.rejected`.
+
+Severity levels (`severity`):
+
+| Severity   | Meaning                                                              | Where it is written                         |
+|------------|----------------------------------------------------------------------|---------------------------------------------|
+| `critical` | Key problem, the row cannot be used                                  | `etl.data_quality_log` and `etl.rejected`   |
+| `error`    | Blocking problem. Key and foreign-key errors also exclude the row    | `etl.data_quality_log` (and `etl.rejected` for key and foreign-key rules) |
+| `warning`  | The row is accepted, Silver repairs it (for example with `Unknown`)  | `etl.data_quality_log` only                 |
+
+Naming of `check_name` in `etl.data_quality_log`:
+- `<Column> NULL`  
+- `<Column> NULL or empty`  
+- `Duplicate <Column>`  
+- `Source empty` (warning, when the Bronze table has no rows)  
+
+---
+
+## **Constraints and Indexes**
+
+| Object                | Pattern                                   | Example                                  |
+|-----------------------|-------------------------------------------|------------------------------------------|
+| Primary key           | `PK_<schema>_<table>`                     | `PK_silver_erp_customer`                 |
+| Default               | `DF_<schema>_<table>_<purpose>`           | `DF_silver_erp_customer_create`          |
+| Check                 | `CK_<table>_<column>`                     | (not used yet)                           |
+| Unique index          | `UX_<schema>_<table>_<column>`            | `UX_silver_erp_product_active_id`        |
+| Non-unique index      | `IX_<schema>_<table>_<column>`            | `IX_silver_erp_subcategory_category_sk`  |
+
+Rules:
+- **Bronze**: no primary keys and no constraints, only the defaults of the audit columns. Tables use a clustered columnstore index (tables with XML or HIERARCHYID columns stay heaps).
+- **Silver**: keys are `NOT NULL` with a primary key (surrogate key for dimensions, business keys for facts). **No foreign keys**: referential integrity is enforced by the load procedures with the Unknown member.
+- SCD2 tables have a unique index on the business key **only for the active rows** (`UX_..._active_id`): exactly one active version per key.
+- Purposes used in default names: `create`, `load`, `start`, `end`, `active`.
+
+---
+
+## **ETL Framework Objects**
+
+| Object                 | Purpose                                                                        |
+|------------------------|--------------------------------------------------------------------------------|
+| `etl.config`           | One row per object: load order, load type, SCD type, tables, watermark         |
+| `etl.batch`            | One row per pipeline run. Its identity is the `batch_id`                       |
+| `etl.rejected`         | The quarantine of blocking rows                                                |
+| `etl.data_quality_log` | Every finding of the quality checks (append-only: never deleted)               |
+
+Rules for `etl.config`:
+- `object_name` is the entity in lowercase snake_case, **without** `erp_` (`sales_order_header`). The same value is used in `etl.rejected.object_name` and `etl.data_quality_log.object_name`.
+- `object_type` is the source system (`erp`).
+- `load_order` goes in steps of 10 (10, 20, 30...) and follows the dependencies: parents before children.
+- `load_type` is `full` or `incremental`.
+- `scd_type` is `0` (static lookup), `1` or `2`.
+- `source_table`, `bronze_table`, `silver_table` store the full names (`AdventureWorks2025.Sales.Store`, `bronze.erp_store`, `silver.erp_store`). `target_table` stores the Gold object fed by the entity, as a logical name (for example `dim_product`).
+- `is_active` switches an object on or off without touching the code. The Gold fact has its own row (`fact_sales_order`), inactive because it is loaded by its own task at the end of the pipeline.
+- `watermark` / `last_watermark_value` are used **only** by the step source to Bronze.
+
+Rules for `etl.batch`:
+- Columns: `batch_id` (identity), `started_at` (default `SYSDATETIME()`), `ended_at` (reserved for closing the run, not used yet), `triggered_by` (login that started the run), `notes`.
+- The `batch_id` is created **once** by SSIS at the start of the run and passed to every procedure: all objects of one run share the same number.
+
+Load order of the pipeline: Bronze, Bronze quality checks, Silver dimensions (parents before children), Silver header, Silver detail, Gold.
+
+---
+
+## **Variables, Parameters and Error Codes**
+
+**Stored procedure parameters**
+
+| Parameter          | Type            | Used by                       | Meaning                                       |
+|--------------------|-----------------|-------------------------------|-----------------------------------------------|
+| `@batch_id`        | `BIGINT`        | all procedures                | Run created by SSIS                           |
+| `@object_name`     | `VARCHAR(50)`   | `usp_load_bronze`             | Object to load (`etl.config.object_name`)     |
+| `@max_reject_rate` | `DECIMAL(5,2)`  | quality checks                | Rejection threshold in %, default `20.00`     |
+
+**Local variables**: `@load_type`, `@load_ts`, `@start_time`, `@end_time`, `@rows_src`, `@rows_updated`, `@rows_inserted`, `@last_silver_load`, `@last_gold_load`.
+
+**Temporary tables**: `#src_full` (source of a FULL load) and `#src_delta` (source of an INCREMENTAL load).
+
+**SSIS variables**: `batch_id`, `object_list` (active objects read from `etl.config`), `current_object_name`, `last_watermark_value`, `check_query`, `new_rows_count`, `current_data_quality_stored_procedure`, `current_silver_load_stored_procedure`, `current_sp_gold_fact_sales_order`. Names are snake_case and describe the content (see [SSIS Pipeline](SSIS_Pipeline.md)).
+
+**Error codes** (`THROW`)
+
+| Code    | Meaning                                                          |
+|---------|------------------------------------------------------------------|
+| `51000` | No active configuration found in `etl.config`                    |
+| `51001` | Invalid `load_type` (allowed: `full`, `incremental`)             |
+| `51002` | Bronze table not found                                           |
+| `51003` | Incremental load without a starting watermark                    |
+| `51010` | Rejection rate above the threshold: pipeline stopped on purpose  |
+| `51011` | Same as 51010, for the sales order header and detail             |
+| `51020` | Unsupported load type for the object                             |
+| `51030` | Source is empty: FULL load stopped to protect the target table   |
+
+---
+
+## **Standard Values and Logic Rules**
+
+**Data types**
+
+| Kind of value                  | Type                          | Rule                                                                  |
+|--------------------------------|-------------------------------|-----------------------------------------------------------------------|
+| Surrogate key                  | `INT`                         | Generated from a sequence                                             |
+| Run identifier (`batch_id`)    | `BIGINT`                      | One new value for every run                                           |
+| Amounts (prices, totals, costs)| `DECIMAL(19,4)`               | **Never `MONEY`** in Silver and Gold: `MONEY` loses precision in multiplications and divisions |
+| Percentages and discounts      | `DECIMAL(5,4)`                | Fractions such as `0.0250`                                            |
+| Coordinates                    | `DECIMAL(9,6)`                | Exact to about 10 cm                                                  |
+| Dates and times from the source| `DATETIME`                    | Same type as the source, so the watermark compares like with like     |
+| Dates in Gold                  | `DATE`                        | Reports need the day, not the time                                    |
+| Technical dates                | `DATETIME2(3)`                | Filled with `SYSDATETIME()`                                           |
+| Row hash                       | `VARBINARY(32)`               | SHA2_256                                                              |
+| Flags                          | `BIT`                         | `0` or `1`                                                            |
+| Text                           | `NVARCHAR(n)`                 | Same length as the source; a derived text is sized for its parts (`person_name` is `NVARCHAR(160)`) |
+| `object_name` in the `etl` tables | `VARCHAR(50)`              | The same length in every table                                        |
+
+Rules:
+- **Bronze keeps the source types**, including `MONEY`: it is a faithful copy.
+- Silver and Gold convert when the data is loaded: the conversion is done by the load procedures.
+- A type change is applied by running the DDL again and then a FULL load.
+
+**Unknown member**
+- Every Silver dimension has a row with surrogate key **-1** and business key -1.
+- Text columns of the Unknown member contain `'Unknown'`. A missing country code is `'N/A'`.
+- When a foreign key is missing or cannot be resolved, the child row points to **-1**: no row is lost.
+
+**SCD Type 1** (a change overwrites the row): `row_hash` is compared, changed rows are updated and the surrogate key is preserved.
+
+**SCD Type 2** (a change creates a new version)
+- The first version of every row starts at `1900-01-01`, so it covers the past.
+- The current version ends at `9999-12-31` and has `is_active = 1`.
+- Lookups of facts use the date range: `order_date >= dwh_start_date AND order_date < dwh_end_date`.
+
+**Row hash**
+- `HASHBYTES('SHA2_256', CONCAT_WS('|', ...))`, stored as `VARBINARY(32)`.
+- NULL values are replaced by a fixed value before hashing.
+- The hash contains **every** column written by the UPDATE, and it is identical in FULL and INCREMENTAL loads.
+
+**Delta (what an incremental load reads)**
+- Source to Bronze: `ModifiedDate` greater than `last_watermark_value` of `etl.config`. The watermark moves only when a new value exists.
+- Bronze to Silver, and Silver to Gold: rows with `dwh_load_date` greater than the last load of the target (`MAX(dwh_load_date)` of the target table). The ERP `ModifiedDate` is not used, because a header change does not touch the detail.
+
+**Quarantine**
+- Blocking rows are copied to `etl.rejected` with the original row in JSON.
+- A load excludes the rows rejected **for the same batch**.
+- Rows fixed and reloaded are marked with `replayed_at` and `replayed_batch_id`.
+
+**Threshold guard**: when the rejection rate exceeds `@max_reject_rate`, the check throws error `51010`. The findings are committed before the error.
+
+**Amounts**: the header total (`total_due`) is allocated to the order lines of the fact: every line gets an equal share of the amount that is not in the lines (tax and freight), and the last line takes the rounding remainder, so the lines always add up to the header.
+
+**Deletes are not detected**: schedule a periodic FULL load.
+
+---
+
+## **Script Files and Comments**
+
+**Folders**
+
+| Folder                                              | Content                                              |
+|-----------------------------------------------------|------------------------------------------------------|
+| `Scripts/ETL`                                       | Database, schemas and framework tables, start batch  |
+| `Scripts/Bronze`                                    | Bronze tables and the Bronze load                    |
+| `Scripts/Silver/Silver_DDL.sql`                     | Silver tables and sequences                          |
+| `Scripts/Silver/Coding/Check_Bronze_Quality`        | One quality check per entity                         |
+| `Scripts/Silver/Coding/Data_Transformation&Load`    | One Silver load per entity                           |
+| `Scripts/Gold`                                      | Gold tables, dimension views and the fact load       |
+
+**File names**
+
+| Kind of script          | Pattern                          | Example                                  |
+|-------------------------|----------------------------------|------------------------------------------|
+| ETL framework           | `ETL_<Object>.sql`               | `ETL_Batch.sql`, `ETL_Start_Batch.sql`   |
+| Layer DDL               | `<Layer>_DDL.sql`                | `Bronze_DDL.sql`, `Silver_DDL.sql`       |
+| Bronze load             | `Load_Bronze.sql`                | `Load_Bronze.sql`                        |
+| Quality check           | `<Entity>.sql`, in `Check_Bronze_Quality` | `Subcategory.sql`               |
+| Silver load             | `Load_Silver_<Entity>.sql`       | `Load_Silver_Sales_Order_Header.sql`     |
+| Gold fact load          | `Load_<Fact>.sql`                | `Load_Fact_Sales_Order.sql`              |
+| Gold dimension view     | `View_Dim_<Entity>.sql`          | `View_Dim_Product.sql`                   |
+
+Rules: English only, `Words_Separated_By_Underscores`, no spaces and no special characters (`:` is not allowed in file names on Windows), extension `.sql`.
+
+**Header of every script**
+
+Every script starts with the same comment, with the same three sections in the same order:
+
+```sql
+/*
+=========================================================
+<Layer> <Type> – <Object>
+=========================================================
+Purpose:
+    What the script or procedure does, in plain words.
+
+SSIS Usage:
+    When and how it runs. For scripts not run by SSIS:
+    "Not executed by SSIS. Run once at deployment."
+
+Warning:
+    What can destroy data or stop the pipeline.
+    If there is nothing to warn about, write "None."
+*/
+```
+
+Rules:
+- Title = `<Layer> <Type> – <Object>`. Layer: Bronze, Silver, Gold, ETL. Type: DDL, Load, Data Quality Check, View, Fact Load.
+- 4-space indent, lines of 60 characters at most.
+- No change log and no "new in v2": Git keeps the history.
+- Every `Warning` must be true: check it against the code.
