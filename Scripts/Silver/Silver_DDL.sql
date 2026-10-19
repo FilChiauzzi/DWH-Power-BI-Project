@@ -105,10 +105,10 @@ CREATE TABLE silver.erp_product (
     product_name               NVARCHAR(50)   NULL,
     product_number             NVARCHAR(25)   NULL,
     make_flag                  BIT            NULL,
-    make_flag_desc             NVARCHAR(20)   NULL,       -- NEW
+    make_flag_desc             NVARCHAR(20)   NULL,       
 
     finished_goods_flag        BIT            NULL,
-    finished_goods_flag_desc   NVARCHAR(20)   NULL,       -- NEW
+    finished_goods_flag_desc   NVARCHAR(20)   NULL,       
 
     color                      NVARCHAR(15)   NULL,
     safety_stock_level         SMALLINT       NULL,
@@ -118,22 +118,22 @@ CREATE TABLE silver.erp_product (
 
     [size]                     NVARCHAR(5)    NULL,
     size_unit_measure_code     NCHAR(3)       NULL,
-    size_unit_desc             NVARCHAR(20)   NULL,       -- NEW
+    size_unit_desc             NVARCHAR(20)   NULL,       
 
     weight_unit_measure_code   NCHAR(3)       NULL,
-    weight_unit_desc           NVARCHAR(20)   NULL,       -- NEW
+    weight_unit_desc           NVARCHAR(20)   NULL,       
 
     [weight]                   DECIMAL(10,2)  NULL,
     days_to_manufacture        INT            NULL,
 
     product_line               NCHAR(2)       NULL,
-    product_line_desc          NVARCHAR(20)   NULL,       -- NEW
+    product_line_desc          NVARCHAR(20)   NULL,       
 
     [class]                    NCHAR(2)       NULL,
-    class_desc                 NVARCHAR(20)   NULL,       -- NEW
+    class_desc                 NVARCHAR(20)   NULL,       
 
     style                      NCHAR(2)       NULL,
-    style_desc                 NVARCHAR(20)   NULL,       -- NEW
+    style_desc                 NVARCHAR(20)   NULL,       
 
     sell_start_date            DATE           NULL,
     sell_end_date              DATE           NULL,
