@@ -13,6 +13,10 @@ Purpose:
     a new value exists. Errors are rolled back and re-thrown
     so that SSIS sees the failure.
 
+    Every execution is logged in etl.load_audit (layer
+    bronze, step load): status, duration, rows inserted and
+    the watermark range. On failure the error is stored too.
+
 SSIS Usage:
     A Start Batch task creates the run in etl.batch and
     stores the number in User::batch_id. A Foreach Loop
@@ -23,7 +27,8 @@ SSIS Usage:
 Warning:
     A FULL load truncates the Bronze table. Run the ETL
     framework scripts first (etl.batch, etl.rejected,
-    etl.data_quality_log, etl.config).
+    etl.data_quality_log, etl.config, etl.load_audit and the
+    audit procedures).
 */
 
 USE [DWH_AdventureWorks2025];
@@ -46,10 +51,31 @@ BEGIN
         @start_time       DATETIME2(3),
         @end_time         DATETIME2(3),
         @batch_start_time DATETIME2(3),
-        @batch_end_time   DATETIME2(3);
+        @batch_end_time   DATETIME2(3),
+        @audit_id         BIGINT,
+        @proc_name        NVARCHAR(256) =
+            QUOTENAME(OBJECT_SCHEMA_NAME(@@PROCID)) + '.' + QUOTENAME(OBJECT_NAME(@@PROCID));
+
+    -- Declared before TRY: the CATCH block needs them for the audit
+    DECLARE
+        @load_type            VARCHAR(20),
+        @last_watermark_value DATETIME,
+        @new_watermark_value  DATETIME,
+        @rows_inserted        INT;
 
     BEGIN TRY
         SET @batch_start_time = SYSDATETIME();
+
+        ---------------------------------------------------------
+        -- Audit: open the step (outside any transaction)
+        ---------------------------------------------------------
+        EXEC etl.usp_audit_start
+            @batch_id       = @batch_id,
+            @layer          = 'bronze',
+            @object_name    = @object_name,
+            @step_name      = 'load',
+            @procedure_name = @proc_name,
+            @audit_id       = @audit_id OUTPUT;
 
         PRINT '====================================================';
         PRINT 'Retrieve configuration for object: ' + @object_name;
@@ -57,17 +83,13 @@ BEGIN
         PRINT '====================================================';
 
         DECLARE
-            @load_type            VARCHAR(20),
             @source_table         VARCHAR(200),
             @bronze_table         VARCHAR(200),
             @watermark            VARCHAR(100),
-            @last_watermark_value DATETIME,
-            @new_watermark_value  DATETIME,
             @cols                 NVARCHAR(MAX),
             @cols_ins             NVARCHAR(MAX),
             @sql                  NVARCHAR(MAX),
-            @rownum_expr          NVARCHAR(200),
-            @rows_inserted        INT;
+            @rownum_expr          NVARCHAR(200);
 
         ---------------------------------------------------------
         -- Read metadata from config table
@@ -200,6 +222,22 @@ BEGIN
             WHERE object_name = @object_name;
         END
 
+        ---------------------------------------------------------
+        -- Audit: close the step as succeeded
+        ---------------------------------------------------------
+        -- With zero new rows the watermark did not move: the
+        -- audit stores the unchanged value, never NULL.
+        SET @new_watermark_value = COALESCE(@new_watermark_value, @last_watermark_value);
+
+        EXEC etl.usp_audit_end
+            @audit_id       = @audit_id,
+            @status         = 'succeeded',
+            @load_type      = @load_type,
+            @rows_read      = @rows_inserted,      -- Bronze: rows read = rows written
+            @rows_inserted  = @rows_inserted,
+            @watermark_from = @last_watermark_value,
+            @watermark_to   = @new_watermark_value;
+
         SET @end_time = SYSDATETIME();
 
         PRINT '>> Batch id: '     + CAST(@batch_id AS NVARCHAR(20));
@@ -223,6 +261,15 @@ BEGIN
         IF @@TRANCOUNT > 0
             ROLLBACK TRANSACTION;
 
+        -- Audit AFTER the rollback, or it would be rolled back too.
+        -- usp_audit_end reads ERROR_MESSAGE() & co. by itself.
+        IF @audit_id IS NOT NULL
+            EXEC etl.usp_audit_end
+                @audit_id       = @audit_id,
+                @status         = 'failed',
+                @load_type      = @load_type,
+                @watermark_from = @last_watermark_value;
+
         PRINT '====================================================';
         PRINT 'ERROR during Bronze load for: ' + @object_name;
         PRINT 'Message: ' + ERROR_MESSAGE();
@@ -237,4 +284,3 @@ BEGIN
     END CATCH
 END;
 GO
-
