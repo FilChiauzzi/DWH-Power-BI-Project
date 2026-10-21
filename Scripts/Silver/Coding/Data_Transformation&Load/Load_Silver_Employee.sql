@@ -18,6 +18,9 @@ Purpose:
     rows whose row_hash changed and inserts new business
     keys.
 
+    Every execution is logged in etl.load_audit (layer silver,
+    step load): status, duration, row counts and, on
+    failure, the error.
 SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline, after
     the Bronze quality check of the same object and after
@@ -55,7 +58,24 @@ BEGIN
         @rows_updated      INT = 0,
         @rows_inserted     INT = 0;
 
+    -- Audit (etl.load_audit): declared before TRY, the CATCH uses them
+    DECLARE
+        @audit_id   BIGINT,
+        @proc_name  NVARCHAR(256) =
+            QUOTENAME(OBJECT_SCHEMA_NAME(@@PROCID)) + '.' + QUOTENAME(OBJECT_NAME(@@PROCID));
+
     BEGIN TRY
+        ---------------------------------------------------------
+        -- Audit: open the step (outside any transaction)
+        ---------------------------------------------------------
+        EXEC etl.usp_audit_start
+            @batch_id       = @batch_id,
+            @layer          = 'silver',
+            @object_name    = 'employee',
+            @step_name      = 'load',
+            @procedure_name = @proc_name,
+            @audit_id       = @audit_id OUTPUT;
+
         ---------------------------------------------------------
         -- Read configuration
         ---------------------------------------------------------
@@ -194,6 +214,13 @@ BEGIN
                   CAST(DATEDIFF(MILLISECOND, @start_time, @end_time) AS NVARCHAR(20)) + ' ms';
             PRINT '====================================================';
 
+            -- Audit: FULL load completed
+            EXEC etl.usp_audit_end
+                @audit_id      = @audit_id,
+                @status        = 'succeeded',
+                @load_type     = 'full',
+                @rows_read     = @rows_src,
+                @rows_inserted = @rows_inserted;
             RETURN;
         END
 
@@ -266,6 +293,15 @@ BEGIN
                 PRINT '>> No delta found. Nothing to do.';
                 DROP TABLE #src_delta;
                 PRINT '====================================================';
+                -- Audit: no delta, nothing to load
+                EXEC etl.usp_audit_end
+                    @audit_id       = @audit_id,
+                    @status         = 'succeeded',
+                    @load_type      = @load_type,
+                    @rows_read      = @rows_src,
+                    @rows_inserted  = @rows_inserted,
+                    @rows_updated   = @rows_updated,
+                    @watermark_from = @last_silver_load;
                 RETURN;
             END
 
@@ -349,6 +385,16 @@ BEGIN
             THROW 51020, 'Unsupported load type for EMPLOYEE.', 1;
         END
 
+        -- Audit: INCREMENTAL load completed
+        EXEC etl.usp_audit_end
+            @audit_id       = @audit_id,
+            @status         = 'succeeded',
+            @load_type      = @load_type,
+            @rows_read      = @rows_src,
+            @rows_inserted  = @rows_inserted,
+            @rows_updated   = @rows_updated,
+            @watermark_from = @last_silver_load;
+
     END TRY
 
     BEGIN CATCH
@@ -365,6 +411,14 @@ BEGIN
         PRINT 'State: '   + CAST(ERROR_STATE()  AS NVARCHAR);
         PRINT 'Line: '    + CAST(ERROR_LINE()   AS NVARCHAR);
         PRINT '====================================================';
+
+        -- Audit AFTER the rollback, or it would be rolled back too.
+        -- usp_audit_end reads ERROR_MESSAGE() & co. by itself.
+        IF @audit_id IS NOT NULL
+            EXEC etl.usp_audit_end
+                @audit_id  = @audit_id,
+                @status    = 'failed',
+                @load_type = @load_type;
 
         THROW;
     END CATCH

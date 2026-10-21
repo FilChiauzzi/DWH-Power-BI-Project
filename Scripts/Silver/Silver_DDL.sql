@@ -123,7 +123,7 @@ CREATE TABLE silver.erp_product (
     weight_unit_measure_code   NCHAR(3)       NULL,
     weight_unit_desc           NVARCHAR(20)   NULL,       
 
-    [weight]                   DECIMAL(10,2)  NULL,
+    [weight]                   DECIMAL(8,2)   NULL,
     days_to_manufacture        INT            NULL,
 
     product_line               NCHAR(2)       NULL,
@@ -555,9 +555,9 @@ IF OBJECT_ID('silver.erp_sales_order_header', 'U') IS NOT NULL
 
 CREATE TABLE silver.erp_sales_order_header (
     sales_order_id         INT            NOT NULL,   -- business key
-    order_date             DATETIME       NULL,
-    due_date               DATETIME       NULL,
-    ship_date              DATETIME       NULL,
+    order_date             DATE           NULL,   -- business date: no time part
+    due_date               DATE           NULL,
+    ship_date              DATE           NULL,
     status                 TINYINT        NULL,
     online_order_flag      BIT            NULL,
     sales_order_number     NVARCHAR(25)   NULL,

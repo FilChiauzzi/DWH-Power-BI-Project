@@ -82,7 +82,7 @@ CREATE TABLE gold.dwh_order_online_order (
 ALTER TABLE gold.dwh_order_online_order
     ADD CONSTRAINT PK_gold_dwh_order_online_order PRIMARY KEY (online_order_id);
 
-CREATE INDEX IX_dwh_order_sales_status_status_description
+CREATE INDEX IX_dwh_order_online_order_description
     ON gold.dwh_order_online_order (order_type_description);
 GO
 
@@ -103,16 +103,16 @@ CREATE TABLE gold.dwh_dim_calendar (
     date_id              INT           NOT NULL,
     full_date            DATE          NOT NULL,
 
-    year                 INT           NOT NULL,
-    quarter              INT           NOT NULL,
-    quarter_name         NVARCHAR(10)  NOT NULL,
-    month                INT           NOT NULL,
+    year                 SMALLINT      NOT NULL,
+    quarter              TINYINT       NOT NULL,
+    quarter_name         NVARCHAR(2)   NOT NULL,
+    month                TINYINT       NOT NULL,
     month_name           NVARCHAR(20)  NOT NULL,
-    month_short_name     NVARCHAR(10)  NOT NULL,
-    day                  INT           NOT NULL,
+    month_short_name     NVARCHAR(3)   NOT NULL,
+    day                  TINYINT       NOT NULL,
     day_name             NVARCHAR(20)  NOT NULL,
-    day_short_name       NVARCHAR(10)  NOT NULL,
-    week_of_year         INT           NOT NULL,
+    day_short_name       NVARCHAR(3)   NOT NULL,
+    week_of_year         TINYINT       NOT NULL,
     is_weekend           BIT           NOT NULL,
 
     dwh_create_date      DATETIME2(3)  NOT NULL

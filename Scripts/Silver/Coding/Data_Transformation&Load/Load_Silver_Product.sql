@@ -15,6 +15,9 @@ Purpose:
     first load); INCREMENTAL applies the SCD2 logic to the
     rows loaded after the last Silver load.
 
+    Every execution is logged in etl.load_audit (layer silver,
+    step load): status, duration, row counts and, on
+    failure, the error.
 SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline, after
     the Bronze quality check of the same object and after
@@ -52,7 +55,24 @@ BEGIN
             @rows_closed       INT = 0,
             @rows_inserted     INT = 0;
 
+    -- Audit (etl.load_audit): declared before TRY, the CATCH uses them
+    DECLARE
+        @audit_id   BIGINT,
+        @proc_name  NVARCHAR(256) =
+            QUOTENAME(OBJECT_SCHEMA_NAME(@@PROCID)) + '.' + QUOTENAME(OBJECT_NAME(@@PROCID));
+
     BEGIN TRY
+        ---------------------------------------------------------
+        -- Audit: open the step (outside any transaction)
+        ---------------------------------------------------------
+        EXEC etl.usp_audit_start
+            @batch_id       = @batch_id,
+            @layer          = 'silver',
+            @object_name    = 'product',
+            @step_name      = 'load',
+            @procedure_name = @proc_name,
+            @audit_id       = @audit_id OUTPUT;
+
         SET @start_time = SYSDATETIME();
 
         ---------------------------------------------------------
@@ -149,8 +169,8 @@ BEGIN
                                  THEN 'Unknown' ELSE TRIM(b.Color) END,
                             b.SafetyStockLevel,
                             b.ReorderPoint,
-                            b.StandardCost,
-                            b.ListPrice,
+                            CAST(b.StandardCost AS DECIMAL(19,4)),   -- MONEY -> text keeps only 2 decimals
+                            CAST(b.ListPrice    AS DECIMAL(19,4)),   -- same: keep the 4 decimals in the hash
                             CASE WHEN b.Size IS NULL OR LTRIM(RTRIM(b.Size)) = ''
                                  THEN 'N/A' ELSE TRIM(b.Size) END,
                             b.SizeUnitMeasureCode,
@@ -285,6 +305,13 @@ BEGIN
             PRINT '>> Duration: ' +
                   CAST(DATEDIFF(MILLISECOND, @start_time, @end_time) AS NVARCHAR(20)) + ' ms';
             PRINT '====================================================';
+            -- Audit: FULL load completed
+            EXEC etl.usp_audit_end
+                @audit_id      = @audit_id,
+                @status        = 'succeeded',
+                @load_type     = 'full',
+                @rows_read     = @rows_src,
+                @rows_inserted = @rows_inserted;
             RETURN;
         END
 
@@ -370,8 +397,8 @@ BEGIN
                              THEN 'Unknown' ELSE LTRIM(RTRIM(b.Color)) END,
                         b.SafetyStockLevel,
                         b.ReorderPoint,
-                        b.StandardCost,
-                        b.ListPrice,
+                        CAST(b.StandardCost AS DECIMAL(19,4)),   -- MONEY -> text keeps only 2 decimals
+                        CAST(b.ListPrice    AS DECIMAL(19,4)),   -- same: keep the 4 decimals in the hash
                         CASE WHEN b.Size IS NULL OR LTRIM(RTRIM(b.Size)) = ''
                              THEN 'N/A' ELSE LTRIM(RTRIM(b.Size)) END,
                         b.SizeUnitMeasureCode,
@@ -422,6 +449,15 @@ BEGIN
             PRINT '>> Duration: ' +
                   CAST(DATEDIFF(MILLISECOND, @start_time, @end_time) AS NVARCHAR(20)) + ' ms';
             PRINT '====================================================';
+            -- Audit: no delta, nothing to load
+            EXEC etl.usp_audit_end
+                @audit_id       = @audit_id,
+                @status         = 'succeeded',
+                @load_type      = @load_type,
+                @rows_read      = @rows_src,
+                @rows_inserted  = @rows_inserted,
+                @rows_updated   = @rows_closed,
+                @watermark_from = @last_silver_load;
             RETURN;
         END
 
@@ -533,6 +569,16 @@ BEGIN
               CAST(DATEDIFF(MILLISECOND, @start_time, @end_time) AS NVARCHAR(20)) + ' ms';
         PRINT '====================================================';
 
+        -- Audit: INCREMENTAL load completed
+        EXEC etl.usp_audit_end
+            @audit_id       = @audit_id,
+            @status         = 'succeeded',
+            @load_type      = @load_type,
+            @rows_read      = @rows_src,
+            @rows_inserted  = @rows_inserted,
+            @rows_updated   = @rows_closed,
+            @watermark_from = @last_silver_load;
+
     END TRY
 
     BEGIN CATCH
@@ -552,6 +598,14 @@ BEGIN
         PRINT 'State: '   + CAST(ERROR_STATE()  AS NVARCHAR);
         PRINT 'Line: '    + CAST(ERROR_LINE()   AS NVARCHAR);
         PRINT '====================================================';
+
+        -- Audit AFTER the rollback, or it would be rolled back too.
+        -- usp_audit_end reads ERROR_MESSAGE() & co. by itself.
+        IF @audit_id IS NOT NULL
+            EXEC etl.usp_audit_end
+                @audit_id  = @audit_id,
+                @status    = 'failed',
+                @load_type = @load_type;
 
         THROW;
     END CATCH

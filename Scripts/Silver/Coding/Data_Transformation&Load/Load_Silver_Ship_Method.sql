@@ -10,6 +10,9 @@ Purpose:
     with 'Unknown' and uses a row_hash for change detection.
     Rows quarantined for the current batch are excluded.
 
+    Every execution is logged in etl.load_audit (layer silver,
+    step load): status, duration, row counts and, on
+    failure, the error.
 SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline, after
     the Bronze quality check of the same object. SSIS passes
@@ -43,7 +46,24 @@ BEGIN
         @rows_src   INT = 0,
         @rows_ins   INT = 0;
 
+    -- Audit (etl.load_audit): declared before TRY, the CATCH uses them
+    DECLARE
+        @audit_id   BIGINT,
+        @proc_name  NVARCHAR(256) =
+            QUOTENAME(OBJECT_SCHEMA_NAME(@@PROCID)) + '.' + QUOTENAME(OBJECT_NAME(@@PROCID));
+
     BEGIN TRY
+        ---------------------------------------------------------
+        -- Audit: open the step (outside any transaction)
+        ---------------------------------------------------------
+        EXEC etl.usp_audit_start
+            @batch_id       = @batch_id,
+            @layer          = 'silver',
+            @object_name    = 'ship_method',
+            @step_name      = 'load',
+            @procedure_name = @proc_name,
+            @audit_id       = @audit_id OUTPUT;
+
         PRINT '====================================================';
         PRINT 'Silver Load – SHIP_METHOD (FULL ONLY) | batch: ' + CAST(@batch_id AS NVARCHAR(20));
         PRINT '====================================================';
@@ -145,6 +165,14 @@ BEGIN
               CAST(DATEDIFF(MILLISECOND, @start_time, @end_time) AS NVARCHAR(20)) + ' ms';
         PRINT '====================================================';
 
+        -- Audit: load completed
+        EXEC etl.usp_audit_end
+            @audit_id      = @audit_id,
+            @status        = 'succeeded',
+            @load_type     = 'full',
+            @rows_read     = @rows_src,
+            @rows_inserted = @rows_ins;
+
     END TRY
 
     BEGIN CATCH
@@ -158,6 +186,14 @@ BEGIN
         PRINT 'State: '   + CAST(ERROR_STATE()  AS NVARCHAR);
         PRINT 'Line: '    + CAST(ERROR_LINE()   AS NVARCHAR);
         PRINT '====================================================';
+
+        -- Audit AFTER the rollback, or it would be rolled back too.
+        -- usp_audit_end reads ERROR_MESSAGE() & co. by itself.
+        IF @audit_id IS NOT NULL
+            EXEC etl.usp_audit_end
+                @audit_id  = @audit_id,
+                @status    = 'failed',
+                @load_type = 'full';
 
         THROW;
     END CATCH

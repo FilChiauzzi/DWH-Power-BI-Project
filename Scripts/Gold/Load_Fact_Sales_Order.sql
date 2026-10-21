@@ -23,6 +23,9 @@ Purpose:
     is empty). The INCREMENTAL branch is implemented but not
     active yet.
 
+    Every execution is logged in etl.load_audit (layer gold,
+    step load): status, duration, row counts and, on
+    failure, the error.
 SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline as the
     last step of the batch, after the Silver header and
@@ -59,7 +62,24 @@ BEGIN
         @end_time        DATETIME2(3),
         @last_gold_load  DATETIME2(3);
 
+    -- Audit (etl.load_audit): declared before TRY, the CATCH uses them
+    DECLARE
+        @audit_id   BIGINT,
+        @proc_name  NVARCHAR(256) =
+            QUOTENAME(OBJECT_SCHEMA_NAME(@@PROCID)) + '.' + QUOTENAME(OBJECT_NAME(@@PROCID));
+
     BEGIN TRY
+        ---------------------------------------------------------
+        -- Audit: open the step (outside any transaction)
+        ---------------------------------------------------------
+        EXEC etl.usp_audit_start
+            @batch_id       = @batch_id,
+            @layer          = 'gold',
+            @object_name    = 'fact_sales_order',
+            @step_name      = 'load',
+            @procedure_name = @proc_name,
+            @audit_id       = @audit_id OUTPUT;
+
         ---------------------------------------------------------
         -- Read load_type from etl.config (no watermark needed)
         ---------------------------------------------------------
@@ -246,6 +266,13 @@ BEGIN
             PRINT '>> Duration: ' +
                   CAST(DATEDIFF(MILLISECOND, @start_time, @end_time) AS NVARCHAR(20)) + ' ms';
             PRINT '====================================================';
+            -- Audit: FULL load completed
+            EXEC etl.usp_audit_end
+                @audit_id      = @audit_id,
+                @status        = 'succeeded',
+                @load_type     = 'full',
+                @rows_read     = @rows_src,
+                @rows_inserted = @rows_inserted;
             RETURN;
         END
 
@@ -376,6 +403,15 @@ BEGIN
                 PRINT '>> No delta found. Incremental load skipped.';
                 DROP TABLE #src_delta;
                 PRINT '====================================================';
+                -- Audit: no delta, nothing to load
+                EXEC etl.usp_audit_end
+                    @audit_id       = @audit_id,
+                    @status         = 'succeeded',
+                    @load_type      = @load_type,
+                    @rows_read      = @rows_src,
+                    @rows_inserted  = @rows_inserted,
+                    @rows_updated   = @rows_updated,
+                    @watermark_from = @last_gold_load;
                 RETURN;
             END
 
@@ -490,6 +526,16 @@ BEGIN
             THROW 51020, 'Unsupported load type for GOLD FACT SALES ORDER.', 1;
         END
 
+        -- Audit: INCREMENTAL load completed
+        EXEC etl.usp_audit_end
+            @audit_id       = @audit_id,
+            @status         = 'succeeded',
+            @load_type      = @load_type,
+            @rows_read      = @rows_src,
+            @rows_inserted  = @rows_inserted,
+            @rows_updated   = @rows_updated,
+            @watermark_from = @last_gold_load;
+
     END TRY
 
     BEGIN CATCH
@@ -506,6 +552,14 @@ BEGIN
         PRINT 'State: '   + CAST(ERROR_STATE()  AS NVARCHAR);
         PRINT 'Line: '    + CAST(ERROR_LINE()   AS NVARCHAR);
         PRINT '====================================================';
+
+        -- Audit AFTER the rollback, or it would be rolled back too.
+        -- usp_audit_end reads ERROR_MESSAGE() & co. by itself.
+        IF @audit_id IS NOT NULL
+            EXEC etl.usp_audit_end
+                @audit_id  = @audit_id,
+                @status    = 'failed',
+                @load_type = @load_type;
 
         THROW;
     END CATCH

@@ -91,8 +91,8 @@ CREATE TABLE bronze.erp_product(
 	Color NVARCHAR(15) NULL,
 	SafetyStockLevel SMALLINT NULL,
 	ReorderPoint SMALLINT NULL,
-	StandardCost DECIMAL(19, 4) NULL,
-	ListPrice DECIMAL(19, 4) NULL,
+	StandardCost MONEY NULL,
+	ListPrice MONEY NULL,
 	[Size] NVARCHAR(5) NULL,
 	SizeUnitMeasureCode NCHAR(3) NULL,
 	WeightUnitMeasureCode NCHAR(3) NULL,
@@ -115,7 +115,7 @@ CREATE TABLE bronze.erp_product(
 );
 
 CREATE CLUSTERED COLUMNSTORE INDEX cci_erp_product ON bronze.erp_product;
-GO allora modiifca il ddl e il bronze quality
+GO
 
 ----------------------------------------------------------
 /*
@@ -130,7 +130,7 @@ CREATE TABLE bronze.erp_customer(
 	[PersonID] INT NULL,
 	[StoreID] INT NULL,
 	[TerritoryID] INT NULL,
-	[AccountNumber] NVARCHAR(20) NULL,
+	[AccountNumber] VARCHAR(10) NULL,
 	[rowguid] UNIQUEIDENTIFIER NULL,
 	[ModifiedDate] DATETIME NULL,
 

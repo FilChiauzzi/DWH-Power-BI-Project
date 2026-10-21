@@ -110,7 +110,7 @@ Business-aligned dimensional model.
 - Flags end with `_flag`, dates end with `_date`, counters end with `_qty`.
 - The source `rowguid` is **not** carried to Silver.
 - The source `ModifiedDate` is kept as `modified_date` with its original type (`DATETIME`): it is a change marker and must never be cast to `DATE`.
-- Gold dates are stored as `DATE`.
+- Business dates without a time part (`order_date`, `due_date`, `ship_date`, `sell_start_date`) are stored as `DATE` from Silver on. Gold dates are always `DATE`.
 
 ### **Technical Columns**
 Prefix: **`dwh_`**  
@@ -180,6 +180,15 @@ Where:
 | `usp_load_silver_<entity>`                     | Loads a Silver table (SCD1 or SCD2)                   | One per entity      |
 | `usp_load_gold_<entity>`                       | Loads a Gold table                                    | One per fact        |
 
+The procedures of the ETL framework do not belong to a layer and use the pattern **`usp_<action>_<object>`**:
+
+| Procedure            | What it does                                                        | Called by                      |
+|----------------------|---------------------------------------------------------------------|--------------------------------|
+| `usp_start_batch`    | Opens the run in `etl.batch`, closes runs left open (`aborted`)    | SSIS, first task               |
+| `usp_audit_start`    | Opens one step in `etl.load_audit` (`running`)                     | every load and quality check   |
+| `usp_audit_end`      | Closes the step: status, counts, watermark, error                  | every load and quality check   |
+| `usp_end_batch`      | Closes the run with the real outcome, read from `etl.load_audit`   | SSIS, last task and OnError    |
+
 Examples:
 - `usp_load_bronze`  
 - `usp_check_bronze_quality_load_category`  
@@ -191,7 +200,8 @@ Rules:
 - Silver SCD1 procedures reconcile with UPDATE (changed `row_hash`) + INSERT (new business key). SCD2 procedures close the active version and insert a new one.
 - FULL load = `TRUNCATE` + reload in one transaction, and it stops when the source is empty.
 - Gold SPs shape the semantic model.
-- Every procedure starts with `SET NOCOUNT ON` and `SET XACT_ABORT ON`, uses `TRY/CATCH`, rolls back and **re-throws**, so that SSIS sees the failure.
+- Every procedure starts with `SET NOCOUNT ON` and `SET XACT_ABORT ON`, uses `TRY/CATCH`, rolls back and **re-throws**, so that SSIS sees the failure. The only exception is `usp_audit_end`: it is called inside the CATCH blocks, so it never throws (a new error would hide the original one).
+- Every load and quality check is **logged** in `etl.load_audit`: `usp_audit_start` right after `BEGIN TRY` (outside any transaction), `usp_audit_end` before every exit (`RETURN` and end of the TRY) and, in the CATCH, **after** the rollback.
 - One script file defines one procedure and starts with the standard header (see [Script Files and Comments](#script-files-and-comments)).
 
 ---
@@ -264,7 +274,8 @@ Naming of `check_name` in `etl.data_quality_log`:
 |-----------------------|-------------------------------------------|------------------------------------------|
 | Primary key           | `PK_<schema>_<table>`                     | `PK_silver_erp_customer`                 |
 | Default               | `DF_<schema>_<table>_<purpose>`           | `DF_silver_erp_customer_create`          |
-| Check                 | `CK_<table>_<column>`                     | (not used yet)                           |
+| Check                 | `CK_<schema>_<table>_<column>`            | `CK_etl_load_audit_status`               |
+| Foreign key           | `FK_<schema>_<table>_<parent>`            | `FK_etl_load_audit_batch`                |
 | Unique index          | `UX_<schema>_<table>_<column>`            | `UX_silver_erp_product_active_id`        |
 | Non-unique index      | `IX_<schema>_<table>_<column>`            | `IX_silver_erp_subcategory_category_sk`  |
 
@@ -272,7 +283,8 @@ Rules:
 - **Bronze**: no primary keys and no constraints, only the defaults of the audit columns. Tables use a clustered columnstore index (tables with XML or HIERARCHYID columns stay heaps).
 - **Silver**: keys are `NOT NULL` with a primary key (surrogate key for dimensions, business keys for facts). **No foreign keys**: referential integrity is enforced by the load procedures with the Unknown member.
 - SCD2 tables have a unique index on the business key **only for the active rows** (`UX_..._active_id`): exactly one active version per key.
-- Purposes used in default names: `create`, `load`, `start`, `end`, `active`.
+- **ETL framework**: `etl.batch` and `etl.load_audit` use CHECK constraints for the allowed status values, and `etl.load_audit` has a foreign key to `etl.batch`: they hold few rows, so the checks cost nothing.
+- Purposes used in default names: `create`, `load`, `start`, `end`, `active`, `status`, `started`.
 
 ---
 
@@ -282,8 +294,12 @@ Rules:
 |------------------------|--------------------------------------------------------------------------------|
 | `etl.config`           | One row per object: load order, load type, SCD type, tables, watermark         |
 | `etl.batch`            | One row per pipeline run. Its identity is the `batch_id`                       |
+| `etl.load_audit`       | One row per step of a run (one object, one layer, one step): status, duration, row counts, watermark, error |
+| `etl.vw_last_successful_load` | Last successful step of every object, layer and step                    |
 | `etl.rejected`         | The quarantine of blocking rows                                                |
 | `etl.data_quality_log` | Every finding of the quality checks (append-only: never deleted)               |
+
+`etl.batch` and `etl.load_audit` answer *"did the **process** work?"* (folder `Scripts/ETL/Audit`). `etl.data_quality_log` and `etl.rejected` answer *"are the **data** good?"* (folder `Scripts/ETL/Error_Event`).
 
 Rules for `etl.config`:
 - `object_name` is the entity in lowercase snake_case, **without** `erp_` (`sales_order_header`). The same value is used in `etl.rejected.object_name` and `etl.data_quality_log.object_name`.
@@ -296,8 +312,17 @@ Rules for `etl.config`:
 - `watermark` / `last_watermark_value` are used **only** by the step source to Bronze.
 
 Rules for `etl.batch`:
-- Columns: `batch_id` (identity), `started_at` (default `SYSDATETIME()`), `ended_at` (reserved for closing the run, not used yet), `triggered_by` (login that started the run), `notes`.
+- Columns: `batch_id` (identity), `started_at` (default `SYSDATETIME()`), `ended_at` (filled by `usp_end_batch`), `triggered_by` (login that started the run, `NVARCHAR(128)` like `SUSER_SNAME()`), `notes`, `status`.
+- `status` of a run: `running`, `succeeded` (no step failed), `failed` (at least one step failed), `aborted` (never closed: closed by the next `usp_start_batch`).
 - The `batch_id` is created **once** by SSIS at the start of the run and passed to every procedure: all objects of one run share the same number.
+- The pipeline never runs twice at the same time: a new run closes the runs still `running` as `aborted`.
+
+Rules for `etl.load_audit`:
+- `layer` is `bronze`, `silver` or `gold`; `step_name` is `load` or `dq_check` (quality checks are logged with layer `silver`, the step that runs them). `object_name` is the same value as in `etl.config`.
+- `status` of a step: `running`, `succeeded`, `failed`, `skipped`.
+- Row counts are NULL when they do not apply to the step (Bronze never updates: `rows_updated` is NULL), `0` when they apply but nothing happened.
+- For SCD2 loads, `rows_updated` is the number of versions closed.
+- The table is never dropped: it is the history of the runs.
 
 Load order of the pipeline: Bronze, Bronze quality checks, Silver dimensions (parents before children), Silver header, Silver detail, Gold.
 
@@ -312,8 +337,10 @@ Load order of the pipeline: Bronze, Bronze quality checks, Silver dimensions (pa
 | `@batch_id`        | `BIGINT`        | all procedures                | Run created by SSIS                           |
 | `@object_name`     | `VARCHAR(50)`   | `usp_load_bronze`             | Object to load (`etl.config.object_name`)     |
 | `@max_reject_rate` | `DECIMAL(5,2)`  | quality checks                | Rejection threshold in %, default `20.00`     |
+| `@audit_id`        | `BIGINT`        | `usp_audit_start` (OUTPUT), `usp_audit_end` | Step of `etl.load_audit` opened and closed by a procedure |
+| `@status`          | `VARCHAR(20)`   | `usp_audit_end`, `usp_end_batch` | Outcome of the step or of the run           |
 
-**Local variables**: `@load_type`, `@load_ts`, `@start_time`, `@end_time`, `@rows_src`, `@rows_updated`, `@rows_inserted`, `@last_silver_load`, `@last_gold_load`.
+**Local variables**: `@load_type`, `@load_ts`, `@start_time`, `@end_time`, `@rows_src`, `@rows_updated`, `@rows_closed` (SCD2), `@rows_inserted`, `@last_silver_load`, `@last_gold_load`, `@audit_id`, `@proc_name` (name of the running procedure, for the audit).
 
 **Temporary tables**: `#src_full` (source of a FULL load) and `#src_delta` (source of an INCREMENTAL load).
 
@@ -331,6 +358,12 @@ Load order of the pipeline: Bronze, Bronze quality checks, Silver dimensions (pa
 | `51011` | Same as 51010, for the sales order header and detail             |
 | `51020` | Unsupported load type for the object                             |
 | `51030` | Source is empty: FULL load stopped to protect the target table   |
+| `51100` | `usp_audit_start` called inside an open transaction              |
+| `51101` | Unknown `batch_id`: the run was not started with `usp_start_batch` |
+| `51110` | Invalid status for `usp_end_batch` (allowed: `succeeded`, `failed`) |
+| `51111` | Unknown `batch_id` in `usp_end_batch`                            |
+
+Code families: `510xx` = loads and quality checks, `511xx` = audit and run log.
 
 ---
 
@@ -345,16 +378,20 @@ Load order of the pipeline: Bronze, Bronze quality checks, Silver dimensions (pa
 | Amounts (prices, totals, costs)| `DECIMAL(19,4)`               | **Never `MONEY`** in Silver and Gold: `MONEY` loses precision in multiplications and divisions |
 | Percentages and discounts      | `DECIMAL(5,4)`                | Fractions such as `0.0250`                                            |
 | Coordinates                    | `DECIMAL(9,6)`                | Exact to about 10 cm                                                  |
-| Dates and times from the source| `DATETIME`                    | Same type as the source, so the watermark compares like with like     |
-| Dates in Gold                  | `DATE`                        | Reports need the day, not the time                                    |
+| Change markers (`modified_date`, watermark) | `DATETIME`       | Same type as the source, so the watermark compares like with like     |
+| Business dates without time    | `DATE`                        | Silver and Gold: order, due, ship and sell dates have no time part    |
+| Small codes and counters       | `TINYINT` / `SMALLINT`        | Calendar parts (`month`, `day`...), status codes, quantities          |
+| Keys of Gold relationships     | `INT`                         | Same type in the fact and in the dimension, even for small codes      |
 | Technical dates                | `DATETIME2(3)`                | Filled with `SYSDATETIME()`                                           |
 | Row hash                       | `VARBINARY(32)`               | SHA2_256                                                              |
 | Flags                          | `BIT`                         | `0` or `1`                                                            |
 | Text                           | `NVARCHAR(n)`                 | Same length as the source; a derived text is sized for its parts (`person_name` is `NVARCHAR(160)`) |
 | `object_name` in the `etl` tables | `VARCHAR(50)`              | The same length in every table                                        |
+| Values returned by a function  | Same type and length as the function | `triggered_by` is `NVARCHAR(128)` like `SUSER_SNAME()`; `error_message` is `NVARCHAR(4000)` like `ERROR_MESSAGE()` |
 
 Rules:
-- **Bronze keeps the source types**, including `MONEY`: it is a faithful copy.
+- **Bronze keeps the source types**, including `MONEY`: it is a faithful copy. A computed source column keeps the type it returns (`Sales.Customer.AccountNumber` is `VARCHAR(10)`).
+- A `MONEY` value converted to text keeps only 2 decimals: in a row hash, amounts are cast to `DECIMAL(19,4)` first.
 - Silver and Gold convert when the data is loaded: the conversion is done by the load procedures.
 - A type change is applied by running the DDL again and then a FULL load.
 
@@ -398,7 +435,9 @@ Rules:
 
 | Folder                                              | Content                                              |
 |-----------------------------------------------------|------------------------------------------------------|
-| `Scripts/ETL`                                       | Database, schemas and framework tables, start batch  |
+| `Scripts/ETL`                                       | Database, schemas, configuration                     |
+| `Scripts/ETL/Audit`                                 | Run log: `etl.batch`, `etl.load_audit` and their procedures |
+| `Scripts/ETL/Error_Event`                           | Quality log and quarantine                           |
 | `Scripts/Bronze`                                    | Bronze tables and the Bronze load                    |
 | `Scripts/Silver/Silver_DDL.sql`                     | Silver tables and sequences                          |
 | `Scripts/Silver/Coding/Check_Bronze_Quality`        | One quality check per entity                         |
@@ -409,7 +448,7 @@ Rules:
 
 | Kind of script          | Pattern                          | Example                                  |
 |-------------------------|----------------------------------|------------------------------------------|
-| ETL framework           | `ETL_<Object>.sql`               | `ETL_Batch.sql`, `ETL_Start_Batch.sql`   |
+| ETL framework           | `ETL_<Object>.sql`               | `ETL_Batch.sql`, `ETL_Load_Audit.sql`, `ETL_Start_Batch.sql`, `ETL_Audit_Procedures.sql` |
 | Layer DDL               | `<Layer>_DDL.sql`                | `Bronze_DDL.sql`, `Silver_DDL.sql`       |
 | Bronze load             | `Load_Bronze.sql`                | `Load_Bronze.sql`                        |
 | Quality check           | `<Entity>.sql`, in `Check_Bronze_Quality` | `Subcategory.sql`               |
@@ -417,7 +456,7 @@ Rules:
 | Gold fact load          | `Load_<Fact>.sql`                | `Load_Fact_Sales_Order.sql`              |
 | Gold dimension view     | `View_Dim_<Entity>.sql`          | `View_Dim_Product.sql`                   |
 
-Rules: English only, `Words_Separated_By_Underscores`, no spaces and no special characters (`:` is not allowed in file names on Windows), extension `.sql`.
+Rules: English only, `Words_Separated_By_Underscores`, no spaces and no special characters (`:` is not allowed in file names on Windows; `&` breaks command lines and URLs), extension `.sql`.
 
 **Header of every script**
 
