@@ -71,7 +71,7 @@ GO
 ---------------------------------------------------------
 -- Procedure
 ---------------------------------------------------------
-CREATE OR ALTER PROCEDURE etl.usp_profile_source
+ALTER   PROCEDURE [etl].[usp_profile_source]
     @object_name VARCHAR(50) = NULL     -- NULL = every active object
 AS
 BEGIN
@@ -97,7 +97,8 @@ BEGIN
         @distinct      BIGINT,
         @min           NVARCHAR(400),
         @max           NVARCHAR(400),
-        @maxlen        INT;
+        @maxlen        INT,
+        @failed        INT = 0;     -- tables that could not be profiled
 
     SELECT @run_id = ISNULL(MAX(profile_run_id), 0) + 1
     FROM etl.data_profile;
@@ -124,128 +125,150 @@ BEGIN
     BEGIN
         PRINT '>> Profiling ' + @obj + ' (' + @source_table + ')';
 
-        -----------------------------------------------------
-        -- Column list of the source table (other database)
-        -----------------------------------------------------
-        SET @db = PARSENAME(@source_table, 3);
+        BEGIN TRY
+            SET @col = NULL;
 
-        IF OBJECT_ID('tempdb..#cols') IS NOT NULL DROP TABLE #cols;
-        CREATE TABLE #cols (
-            column_id   INT,
-            column_name SYSNAME,
-            data_type   SYSNAME,
-            is_nullable BIT
-        );
+            -----------------------------------------------------
+            -- Column list of the source table (other database)
+            -----------------------------------------------------
+            SET @db = PARSENAME(@source_table, 3);
 
-        -- TYPE_NAME(system_type_id): base type, so the
-        -- AdventureWorks user types (Name, Flag...) become
-        -- nvarchar, bit...
-        SET @sql = N'
-            SELECT c.column_id, c.name, TYPE_NAME(c.system_type_id), c.is_nullable
-            FROM ' + QUOTENAME(@db) + N'.sys.columns AS c
-            WHERE c.object_id = OBJECT_ID(@tbl)
-              AND c.is_computed = 0
-            ORDER BY c.column_id;';
-
-        INSERT INTO #cols (column_id, column_name, data_type, is_nullable)
-        EXEC sp_executesql @sql, N'@tbl NVARCHAR(400)', @tbl = @source_table;
-
-        IF NOT EXISTS (SELECT 1 FROM #cols)
-            PRINT '   !! Source table not found or no columns: check source_table in etl.config';
-
-        -----------------------------------------------------
-        -- One query per column
-        -----------------------------------------------------
-        DECLARE col_cur CURSOR LOCAL FAST_FORWARD FOR
-            SELECT column_id, column_name, data_type, is_nullable
-            FROM #cols
-            ORDER BY column_id;
-
-        OPEN col_cur;
-        FETCH NEXT FROM col_cur INTO @column_id, @col, @type, @nullable;
-
-        WHILE @@FETCH_STATUS = 0
-        BEGIN
-            SET @c = QUOTENAME(@col);
-
-            -- Types that cannot be compared or counted distinct
-            IF @type IN ('xml', 'geography', 'geometry', 'hierarchyid',
-                         'varbinary', 'binary', 'image', 'text', 'ntext',
-                         'sql_variant', 'timestamp')
-            BEGIN
-                SET @dist_expr = N'NULL';
-                SET @min_expr  = N'NULL';
-                SET @max_expr  = N'NULL';
-            END
-            ELSE IF @type = 'uniqueidentifier'
-            BEGIN
-                SET @dist_expr = N'COUNT_BIG(DISTINCT ' + @c + N')';
-                SET @min_expr  = N'NULL';
-                SET @max_expr  = N'NULL';
-            END
-            ELSE IF @type = 'bit'
-            BEGIN
-                -- MIN/MAX do not accept bit: cast to tinyint
-                SET @dist_expr = N'COUNT_BIG(DISTINCT ' + @c + N')';
-                SET @min_expr  = N'CONVERT(NVARCHAR(400), MIN(CAST(' + @c + N' AS TINYINT)))';
-                SET @max_expr  = N'CONVERT(NVARCHAR(400), MAX(CAST(' + @c + N' AS TINYINT)))';
-            END
-            ELSE IF @type IN ('date', 'datetime', 'datetime2', 'smalldatetime', 'datetimeoffset', 'time')
-            BEGIN
-                -- Style 121: yyyy-mm-dd hh:mi:ss.mmm
-                SET @dist_expr = N'COUNT_BIG(DISTINCT ' + @c + N')';
-                SET @min_expr  = N'CONVERT(NVARCHAR(400), MIN(' + @c + N'), 121)';
-                SET @max_expr  = N'CONVERT(NVARCHAR(400), MAX(' + @c + N'), 121)';
-            END
-            ELSE
-            BEGIN
-                SET @dist_expr = N'COUNT_BIG(DISTINCT ' + @c + N')';
-                SET @min_expr  = N'CONVERT(NVARCHAR(400), MIN(' + @c + N'))';
-                SET @max_expr  = N'CONVERT(NVARCHAR(400), MAX(' + @c + N'))';
-            END;
-
-            SET @len_expr =
-                CASE WHEN @type IN ('char', 'varchar', 'nchar', 'nvarchar')
-                     THEN N'MAX(LEN(' + @c + N'))'
-                     ELSE N'NULL'
-                END;
-
-            SET @sql = N'
-                SELECT
-                    @rows     = COUNT_BIG(*),
-                    @nulls    = SUM(CASE WHEN ' + @c + N' IS NULL THEN 1 ELSE 0 END),
-                    @distinct = ' + @dist_expr + N',
-                    @min      = ' + @min_expr  + N',
-                    @max      = ' + @max_expr  + N',
-                    @maxlen   = ' + @len_expr  + N'
-                FROM ' + @source_table + N';';
-
-            EXEC sp_executesql @sql,
-                N'@rows BIGINT OUTPUT, @nulls BIGINT OUTPUT, @distinct BIGINT OUTPUT,
-                  @min NVARCHAR(400) OUTPUT, @max NVARCHAR(400) OUTPUT, @maxlen INT OUTPUT',
-                @rows = @rows OUTPUT, @nulls = @nulls OUTPUT, @distinct = @distinct OUTPUT,
-                @min = @min OUTPUT, @max = @max OUTPUT, @maxlen = @maxlen OUTPUT;
-
-            INSERT INTO etl.data_profile (
-                profile_run_id, object_name, source_table,
-                column_id, column_name, data_type, is_nullable,
-                row_count, null_count, null_pct, distinct_count,
-                min_value, max_value, max_length
-            )
-            VALUES (
-                @run_id, @obj, @source_table,
-                @column_id, @col, @type, @nullable,
-                @rows, ISNULL(@nulls, 0),
-                CASE WHEN @rows = 0 THEN NULL
-                     ELSE CAST(100.0 * ISNULL(@nulls, 0) / @rows AS DECIMAL(5,2)) END,
-                @distinct, @min, @max, @maxlen
+            IF OBJECT_ID('tempdb..#cols') IS NOT NULL DROP TABLE #cols;
+            CREATE TABLE #cols (
+                column_id   INT,
+                column_name SYSNAME,
+                data_type   SYSNAME,
+                is_nullable BIT
             );
 
-            FETCH NEXT FROM col_cur INTO @column_id, @col, @type, @nullable;
-        END;
+            -- Data type:
+            --   TYPE_NAME(system_type_id): base type, so the
+            --   AdventureWorks alias types (Name, Flag...) become
+            --   nvarchar, bit...
+            --   CLR types (hierarchyid, geography, geometry) all
+            --   share system_type_id 240, which has no name: for
+            --   them TYPE_NAME returns NULL, so user_type_id is used.
+            SET @sql = N'
+                SELECT c.column_id, c.name,
+                       COALESCE(TYPE_NAME(c.system_type_id), TYPE_NAME(c.user_type_id)),
+                       c.is_nullable
+                FROM ' + QUOTENAME(@db) + N'.sys.columns AS c
+                WHERE c.object_id = OBJECT_ID(@tbl)
+                  AND c.is_computed = 0
+                ORDER BY c.column_id;';
 
-        CLOSE col_cur;
-        DEALLOCATE col_cur;
+            INSERT INTO #cols (column_id, column_name, data_type, is_nullable)
+            EXEC sp_executesql @sql, N'@tbl NVARCHAR(400)', @tbl = @source_table;
+
+            IF NOT EXISTS (SELECT 1 FROM #cols)
+                PRINT '   !! Source table not found or no columns: check source_table in etl.config';
+
+            -----------------------------------------------------
+            -- One query per column
+            -----------------------------------------------------
+            DECLARE col_cur CURSOR LOCAL FAST_FORWARD FOR
+                SELECT column_id, column_name, data_type, is_nullable
+                FROM #cols
+                ORDER BY column_id;
+
+            OPEN col_cur;
+            FETCH NEXT FROM col_cur INTO @column_id, @col, @type, @nullable;
+
+            WHILE @@FETCH_STATUS = 0
+            BEGIN
+                SET @c = QUOTENAME(@col);
+
+                -- Types that cannot be compared or counted distinct
+                IF @type IN ('xml', 'geography', 'geometry', 'hierarchyid',
+                             'varbinary', 'binary', 'image', 'text', 'ntext',
+                             'sql_variant', 'timestamp')
+                BEGIN
+                    SET @dist_expr = N'NULL';
+                    SET @min_expr  = N'NULL';
+                    SET @max_expr  = N'NULL';
+                END
+                ELSE IF @type = 'uniqueidentifier'
+                BEGIN
+                    SET @dist_expr = N'COUNT_BIG(DISTINCT ' + @c + N')';
+                    SET @min_expr  = N'NULL';
+                    SET @max_expr  = N'NULL';
+                END
+                ELSE IF @type = 'bit'
+                BEGIN
+                    -- MIN/MAX do not accept bit: cast to tinyint
+                    SET @dist_expr = N'COUNT_BIG(DISTINCT ' + @c + N')';
+                    SET @min_expr  = N'CONVERT(NVARCHAR(400), MIN(CAST(' + @c + N' AS TINYINT)))';
+                    SET @max_expr  = N'CONVERT(NVARCHAR(400), MAX(CAST(' + @c + N' AS TINYINT)))';
+                END
+                ELSE IF @type IN ('date', 'datetime', 'datetime2', 'smalldatetime', 'datetimeoffset', 'time')
+                BEGIN
+                    -- Style 121: yyyy-mm-dd hh:mi:ss.mmm
+                    SET @dist_expr = N'COUNT_BIG(DISTINCT ' + @c + N')';
+                    SET @min_expr  = N'CONVERT(NVARCHAR(400), MIN(' + @c + N'), 121)';
+                    SET @max_expr  = N'CONVERT(NVARCHAR(400), MAX(' + @c + N'), 121)';
+                END
+                ELSE
+                BEGIN
+                    SET @dist_expr = N'COUNT_BIG(DISTINCT ' + @c + N')';
+                    SET @min_expr  = N'CONVERT(NVARCHAR(400), MIN(' + @c + N'))';
+                    SET @max_expr  = N'CONVERT(NVARCHAR(400), MAX(' + @c + N'))';
+                END;
+
+                SET @len_expr =
+                    CASE WHEN @type IN ('char', 'varchar', 'nchar', 'nvarchar')
+                         THEN N'MAX(LEN(' + @c + N'))'
+                         ELSE N'NULL'
+                    END;
+
+                SET @sql = N'
+                    SELECT
+                        @rows     = COUNT_BIG(*),
+                        @nulls    = SUM(CASE WHEN ' + @c + N' IS NULL THEN 1 ELSE 0 END),
+                        @distinct = ' + @dist_expr + N',
+                        @min      = ' + @min_expr  + N',
+                        @max      = ' + @max_expr  + N',
+                        @maxlen   = ' + @len_expr  + N'
+                    FROM ' + @source_table + N';';
+
+                EXEC sp_executesql @sql,
+                    N'@rows BIGINT OUTPUT, @nulls BIGINT OUTPUT, @distinct BIGINT OUTPUT,
+                      @min NVARCHAR(400) OUTPUT, @max NVARCHAR(400) OUTPUT, @maxlen INT OUTPUT',
+                    @rows = @rows OUTPUT, @nulls = @nulls OUTPUT, @distinct = @distinct OUTPUT,
+                    @min = @min OUTPUT, @max = @max OUTPUT, @maxlen = @maxlen OUTPUT;
+
+                INSERT INTO etl.data_profile (
+                    profile_run_id, object_name, source_table,
+                    column_id, column_name, data_type, is_nullable,
+                    row_count, null_count, null_pct, distinct_count,
+                    min_value, max_value, max_length
+                )
+                VALUES (
+                    @run_id, @obj, @source_table,
+                    @column_id, @col, @type, @nullable,
+                    @rows, ISNULL(@nulls, 0),
+                    CASE WHEN @rows = 0 THEN NULL
+                         ELSE CAST(100.0 * ISNULL(@nulls, 0) / @rows AS DECIMAL(5,2)) END,
+                    @distinct, @min, @max, @maxlen
+                );
+
+                FETCH NEXT FROM col_cur INTO @column_id, @col, @type, @nullable;
+            END;
+
+            CLOSE col_cur;
+            DEALLOCATE col_cur;
+        END TRY
+        BEGIN CATCH
+            -- One table fails: log it, clean up, go on with the next one
+            SET @failed = @failed + 1;
+
+            IF CURSOR_STATUS('local', 'col_cur') >= 0  CLOSE col_cur;       -- open
+            IF CURSOR_STATUS('local', 'col_cur') >= -1 DEALLOCATE col_cur;  -- allocated
+
+            PRINT '   !! ERROR on ' + @obj
+                + ' | column: ' + ISNULL(@col, '-')
+                + ' | ' + CAST(ERROR_NUMBER() AS VARCHAR(10))
+                + ': ' + ERROR_MESSAGE();
+        END CATCH;
 
         FETCH NEXT FROM obj_cur INTO @obj, @source_table;
     END;
@@ -254,10 +277,10 @@ BEGIN
     DEALLOCATE obj_cur;
 
     PRINT '====================================================';
-    PRINT 'Profiling completed | run: ' + CAST(@run_id AS VARCHAR(20));
+    PRINT 'Profiling completed | run: ' + CAST(@run_id AS VARCHAR(20))
+        + ' | tables failed: ' + CAST(@failed AS VARCHAR(10));
     PRINT '====================================================';
 END;
-GO
 
 /*
 ---------------------------------------------------------
