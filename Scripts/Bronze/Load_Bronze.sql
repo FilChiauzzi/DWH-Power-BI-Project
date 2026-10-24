@@ -9,6 +9,9 @@ Purpose:
     rows newer than the stored watermark.
     In both modes the new watermark is computed from the
     rows copied into Bronze, never from the source.
+    An incremental object without a watermark (first run,
+    or etl.config recreated) is loaded as FULL once: the
+    full load fills the watermark for the next runs.
 
     Every row is stamped with dwh_batch_id and
     dwh_source_row_num. The watermark is advanced only when
@@ -116,6 +119,19 @@ BEGIN
             THROW 51001, 'Invalid load_type in etl.config. Allowed values: full, incremental.', 1;
 
         ---------------------------------------------------------
+        -- Initial load: an incremental object without a
+        -- watermark has never been loaded. Load everything
+        -- once (FULL): the full load fills the watermark, and
+        -- from the next run the object is loaded incrementally.
+        -- etl.config is not changed.
+        ---------------------------------------------------------
+        IF @load_type = 'incremental' AND @last_watermark_value IS NULL
+        BEGIN
+            PRINT '>> No watermark yet: initial load, executed as FULL';
+            SET @load_type = 'full';
+        END
+
+        ---------------------------------------------------------
         -- Explicit column list from the bronze table definition.
         --   @cols_src: source columns only (exclude ALL dwh_%)
         --   @cols_ins: source columns + the two audit columns we
@@ -184,8 +200,6 @@ BEGIN
         ---------------------------------------------------------
         ELSE
         BEGIN
-            IF @last_watermark_value IS NULL
-                THROW 51003, 'Incremental load requires a last_watermark_value in etl.config. Run a FULL load first or set the starting watermark.', 1;
 
             -- The watermark is passed as a DATETIME parameter,
             -- never converted to a string.
