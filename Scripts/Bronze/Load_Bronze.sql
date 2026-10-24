@@ -7,6 +7,8 @@ Purpose:
     the metadata in etl.config. FULL truncates and reloads
     the table in one transaction; INCREMENTAL reads only
     rows newer than the stored watermark.
+    In both modes the new watermark is computed from the
+    rows copied into Bronze, never from the source.
 
     Every row is stamped with dwh_batch_id and
     dwh_source_row_num. The watermark is advanced only when
