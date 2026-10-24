@@ -8,8 +8,9 @@ Purpose:
     system (object_type), load order, load type (full or
     incremental), SCD type (0 static lookup, 1 or 2), the
     source, Bronze and Silver table names, the active flag,
-    the Bronze watermark and the Gold object it feeds
-    (target_table).
+    the Bronze watermark, last_silver_batch_id, last batch 
+    whose Bronze rows were processed by Silver with success 
+    and the Gold object it feeds.
 
     The last row, fact_sales_order, describes the Gold fact.
     It is inactive because the fact is loaded by its own
