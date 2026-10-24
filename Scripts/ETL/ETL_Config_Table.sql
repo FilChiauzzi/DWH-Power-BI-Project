@@ -52,6 +52,7 @@ CREATE TABLE etl.config (
     is_active            BIT           NOT NULL,
     watermark            VARCHAR(20)   NULL,       -- column used as delta marker
     last_watermark_value DATETIME      NULL,       -- filled by the Bronze load
+    last_silver_batch_id  BIGINT  NULL,            -- last batch processed by Silver with success (Bronze -> Silver bookmark)
     target_table         VARCHAR(200)  NULL        -- Gold object fed by the entity
 );
 GO
