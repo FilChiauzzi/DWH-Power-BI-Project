@@ -168,10 +168,10 @@ BEGIN
 
             COMMIT TRANSACTION;
 
-            -- Compute new watermark from the source
+            -- Compute new watermark from the bronze layer per table
             SET @sql =
                 'SELECT @wm = MAX(' + QUOTENAME(@watermark) + ')' +
-                ' FROM ' + @source_table + ';';
+                ' FROM ' + @bronze_table + ';';
             EXEC sp_executesql @sql,
                 N'@wm DATETIME OUTPUT',
                 @wm = @new_watermark_value OUTPUT;
