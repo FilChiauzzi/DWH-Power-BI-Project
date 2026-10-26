@@ -186,8 +186,8 @@ BEGIN
                         row_hash, dwh_create_date, dwh_load_date, dwh_batch_id
                     )
                     VALUES (
-                        -1, -1, 'Unknown',
-                        'Unknown', -1,
+                        -1, -1, 'N/A',          -- state_province_code is NCHAR(3)
+                        'N/A', -1,            -- country_region_code is NVARCHAR(3)
                         'Unknown', -1, -1,
                         NULL, @load_ts, @load_ts, -1
                     );
