@@ -12,7 +12,12 @@ Purpose:
         table a volume check compares the source with the
         last load: an empty source (error 51004) or a drop of
         more than 50% (error 51005) stops the load and leaves
-        the Bronze table untouched.
+        the Bronze table untouched. After the copy the rows
+        copied are compared with the rows counted in the
+        source: a difference is logged as a warning in
+        etl.data_quality_log (the source may change during the
+        copy). Rows are numbered by the primary key of the
+        source, so dwh_source_row_num is stable between runs.
     load_type incremental
         delegates to etl.usp_load_bronze_cdc, which reads
         only the changes with SQL Server Change Data Capture
@@ -25,8 +30,8 @@ Purpose:
     so that SSIS sees the failure.
 
     Every execution is logged in etl.load_audit (layer
-    bronze, step load): status, duration, rows inserted and
-    the load type really executed. On failure the error is
+    bronze, step load): status, duration, rows read from the
+    source, rows inserted and the load type really executed. On failure the error is
     stored too.
 
 SSIS Usage:
@@ -71,6 +76,7 @@ BEGIN
     -- Declared before TRY: the CATCH block needs them for the audit
     DECLARE
         @load_type     VARCHAR(20),
+        @rows_read     INT = 0,
         @rows_inserted INT = 0;
 
     BEGIN TRY
@@ -101,7 +107,8 @@ BEGIN
             @src_rows     BIGINT,
             @bronze_rows  BIGINT,
             @max_drop_pct INT = 50,          -- more than 50% fewer rows than the last load = suspicious
-            @msg          NVARCHAR(400);
+            @msg          NVARCHAR(400),
+            @key_order    NVARCHAR(MAX);
 
         ---------------------------------------------------------
         -- Read metadata from config table
@@ -138,6 +145,7 @@ BEGIN
             EXEC etl.usp_load_bronze_cdc
                  @object_name   = @object_name,
                  @batch_id      = @batch_id,
+                 @rows_read     = @rows_read     OUTPUT,
                  @rows_inserted = @rows_inserted OUTPUT,
                  @mode          = @cdc_mode      OUTPUT;
 
@@ -191,6 +199,26 @@ BEGIN
 
             PRINT CONCAT('>> Volume check ok: source ', @src_rows, ', last load ', @bronze_rows);
 
+            SET @rows_read = @src_rows;
+
+            -----------------------------------------------------
+            -- Stable row numbers: order by the primary key of
+            -- the source (no primary key: any order)
+            -----------------------------------------------------
+            SET @sql =
+                N'SELECT @k = STRING_AGG(CAST(QUOTENAME(c.name) AS NVARCHAR(MAX)), N'', '')' +
+                N'            WITHIN GROUP (ORDER BY ic.key_ordinal)' +
+                N' FROM ' + QUOTENAME(PARSENAME(@source_table, 3)) + N'.sys.indexes AS i' +
+                N' JOIN ' + QUOTENAME(PARSENAME(@source_table, 3)) + N'.sys.index_columns AS ic' +
+                N'   ON ic.object_id = i.object_id AND ic.index_id = i.index_id' +
+                N' JOIN ' + QUOTENAME(PARSENAME(@source_table, 3)) + N'.sys.columns AS c' +
+                N'   ON c.object_id = ic.object_id AND c.column_id = ic.column_id' +
+                N' WHERE i.object_id = OBJECT_ID(@t) AND i.is_primary_key = 1;';
+            EXEC sp_executesql @sql, N'@t NVARCHAR(400), @k NVARCHAR(MAX) OUTPUT',
+                 @t = @source_table, @k = @key_order OUTPUT;
+
+            SET @key_order = ISNULL(@key_order, N'(SELECT NULL)');
+
             BEGIN TRANSACTION;
 
                 SET @sql = 'TRUNCATE TABLE ' + @bronze_table + ';';
@@ -199,12 +227,31 @@ BEGIN
                 SET @sql =
                     'INSERT INTO ' + @bronze_table +
                     ' (' + @cols + ', [dwh_batch_id], [dwh_source_row_num])' +
-                    ' SELECT ' + @cols + ', @batch_id, ROW_NUMBER() OVER (ORDER BY (SELECT NULL))' +
+                    ' SELECT ' + @cols + ', @batch_id, ROW_NUMBER() OVER (ORDER BY ' + @key_order + ')' +
                     ' FROM '   + @source_table + ';';
                 EXEC sp_executesql @sql, N'@batch_id BIGINT', @batch_id = @batch_id;
                 SET @rows_inserted = @@ROWCOUNT;
 
             COMMIT TRANSACTION;
+
+            -----------------------------------------------------
+            -- Row count reconciliation (Kimball: verify that all
+            -- the data moved). Not blocking: the source may change
+            -- between the count and the copy.
+            -----------------------------------------------------
+            IF @rows_inserted <> @src_rows
+            BEGIN
+                INSERT INTO etl.data_quality_log
+                    (batch_id, layer, object_name, check_name, record_id, description, severity)
+                VALUES
+                    (@batch_id, 'bronze', @object_name, 'Row count reconciliation', NULL,
+                     CONCAT('Source counted ', @src_rows, ' rows before the copy, ',
+                            @rows_inserted, ' rows copied into Bronze'), 'warning');
+
+                PRINT CONCAT('>> WARNING row count: source ', @src_rows, ', copied ', @rows_inserted);
+            END
+            ELSE
+                PRINT CONCAT('>> Row count reconciliation ok: ', @rows_inserted, ' rows');
         END
 
         ---------------------------------------------------------
@@ -214,7 +261,7 @@ BEGIN
             @audit_id      = @audit_id,
             @status        = 'succeeded',
             @load_type     = @load_type,
-            @rows_read     = @rows_inserted,      -- Bronze: rows read = rows written
+            @rows_read     = @rows_read,          -- counted in the source (CDC: net changes read)
             @rows_inserted = @rows_inserted;
 
         SET @end_time = SYSDATETIME();

@@ -29,6 +29,12 @@ Purpose:
        written and the bookmark does not move.
     5. Writes the rows and saves the new bookmark in ONE
        transaction: both or neither.
+    6. State reconciliation: after writing, the current state
+       of the Bronze must have as many rows as the source.
+       A difference is logged as a warning in
+       etl.data_quality_log (the source may change after the
+       end of the window): it is the proof that CDC lost
+       nothing.
 
     CDC says WHICH rows changed and HOW; the values are read
     from the source (CDC does not store computed columns).
@@ -68,6 +74,7 @@ CREATE OR ALTER PROCEDURE etl.usp_load_bronze_cdc
     @debug         BIT         = 0,        -- 1 = print the generated SQL
     @max_drop_pct  INT         = 50,       -- full: more than 50% fewer rows than the current state = suspicious
     @max_del_pct   INT         = 50,       -- cdc: more than 50% of the rows deleted in one night = suspicious
+    @rows_read     INT         = NULL OUTPUT,   -- full: rows of the source; cdc: net changes read
     @rows_inserted INT         = NULL OUTPUT,
     @mode          VARCHAR(10) = NULL OUTPUT
 AS
@@ -311,6 +318,42 @@ BEGIN
 
         -- 6c. NONE: nothing to read, bookmark unchanged
 
+        ---------------------------------------------------------
+        -- 7. State reconciliation: current state of Bronze = source
+        ---------------------------------------------------------
+        IF @mode <> 'none'
+        BEGIN
+            SET @sql =
+                N'SELECT @n = COUNT_BIG(*)' +
+                N' FROM (SELECT dwh_operation,' +
+                N'              ROW_NUMBER() OVER (PARTITION BY ' + @key_order +
+                N'                                 ORDER BY dwh_batch_id DESC, dwh_source_row_num DESC) AS rn' +
+                N'       FROM ' + @bronze_table + N') AS v' +
+                N' WHERE v.rn = 1 AND v.dwh_operation <> ''D'';';
+            EXEC sp_executesql @sql, N'@n BIGINT OUTPUT', @n = @state_rows OUTPUT;
+
+            IF @mode = 'cdc'
+            BEGIN
+                SET @sql = N'SELECT @n = COUNT_BIG(*) FROM ' + @source_table + N';';
+                EXEC sp_executesql @sql, N'@n BIGINT OUTPUT', @n = @src_rows OUTPUT;
+            END;
+
+            IF @state_rows <> @src_rows
+            BEGIN
+                INSERT INTO etl.data_quality_log
+                    (batch_id, layer, object_name, check_name, record_id, description, severity)
+                VALUES
+                    (@batch_id, 'bronze', @object_name, 'State reconciliation', NULL,
+                     CONCAT('Current Bronze state ', @state_rows, ' rows, source ', @src_rows,
+                            ' rows (mode ', @mode, ')'), 'warning');
+
+                PRINT CONCAT('>> WARNING state: Bronze ', @state_rows, ', source ', @src_rows);
+            END
+            ELSE
+                PRINT CONCAT('>> State reconciliation ok: ', @state_rows, ' rows');
+        END;
+
+        SET @rows_read     = CASE WHEN @mode = 'full' THEN @src_rows ELSE @rows END;
         SET @rows_inserted = @rows;     -- returned to the caller (usp_load_bronze)
 
         PRINT '>> Rows inserted: ' + CAST(@rows AS VARCHAR(20));
