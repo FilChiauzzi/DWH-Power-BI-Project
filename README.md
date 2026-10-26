@@ -33,6 +33,7 @@ This project builds a complete **data warehouse** for sales analysis, from the r
 | Bronze layer (raw data)                | ✅ Done         |
 | Quality checks and quarantine          | ✅ Done         |
 | Run log (audit of every run and step)  | ✅ Done         |
+| Change Data Capture (incremental loads)| ✅ Done: 11 tables, deletes as soft delete |
 | Silver layer (clean data, history)     | ✅ Done         |
 | Gold layer (star schema)               | ✅ Done: fact table, 5 dimension views, small dimensions |
 | Power BI dashboards                    | 🚧 In progress  |
@@ -113,8 +114,8 @@ One SSIS pipeline runs the whole load, in this order:
 |-----:|-------------------------------------------------------------------------------------------|
 | 1    | **Start Batch**: a new run is created, so every row can be traced to one execution        |
 | 2    | **Get Config Objects**: the active tables are read from the configuration table           |
-| 3    | **Bronze**: each table is copied from the source, in full or incrementally                |
-| 4    | **Silver**: for each table, quality check, then cleaning, history and surrogate keys      |
+| 3    | **Bronze**: small tables are copied in full; the others receive only their changes (inserts, updates, deletes) from SQL Server CDC |
+| 4    | **Silver**: for each table, the rows not yet processed are checked, cleaned, historized (SCD1/SCD2) and merged; a register records the last batch processed |
 | 5    | **Gold**: the fact table is loaded from Silver                                            |
 | 6    | **End Batch**: the run is closed as succeeded or failed (also on any error)               |
 
@@ -129,12 +130,14 @@ The pipeline contains **no business logic**: it only calls stored procedures. A 
 | Feature                    | What it means                                                                                  |
 |----------------------------|------------------------------------------------------------------------------------------------|
 | **Metadata-driven**        | Objects, order, load type and on/off switch live in a configuration table                       |
-| **Full and incremental**   | Small tables are reloaded, orders are loaded only when new                                      |
+| **Full and incremental**   | 4 small lookup tables are reloaded; the other 11 are loaded with **SQL Server Change Data Capture**: every change is captured from the transaction log, also when it is made by a script or is a delete |
 | **Data quality**           | Rules per table, a log of every finding, a quarantine for bad rows, a stop when too many are bad |
 | **History**                | SCD type 2 for product, customer and sales person; type 1 for everything else                   |
 | **Traceability**           | Every row carries the run (`batch_id`) and the load date                                        |
-| **Run log (audit)**        | Every step of every run is logged: status, duration, row counts, watermark and errors          |
-| **Change detection**       | A hash of each row tells whether it really changed                                              |
+| **Run log (audit)**        | Every step of every run is logged: status, duration, row counts and errors                     |
+| **Change detection**       | CDC tells which rows changed; in Silver a hash of each row tells whether a new version is needed |
+| **Deletes**                | Soft delete: a row deleted in the source is flagged in Silver, excluded from the Gold fact, kept in the dimensions |
+| **Recovery**               | Two bookmarks (`last_lsn`, `last_silver_batch_id`) move only when their step succeeds: a failed run is caught up by the next one |
 | **Safe by design**         | A full load never empties a table when the source is empty                                      |
 
 ---
@@ -161,7 +164,9 @@ Release 1 delivers the full path from the source to the star schema. The next re
 ├── Scripts/
 │   ├── ETL/       Database, schemas and configuration
 │   │   ├── Audit/        Run log: runs, steps and their procedures
-│   │   └── Error_Event/  Quality log and quarantine
+│   │   ├── CDC/          Change Data Capture on the source
+│   │   ├── Error_Event/  Quality log and quarantine
+│   │   └── Profiling/    Source profiling
 │   ├── Bronze/    Raw tables and the generic Bronze load
 │   ├── Silver/    Clean tables, quality checks and Silver loads
 │   └── Gold/      Fact table, dimensions and Gold load
@@ -180,12 +185,13 @@ Run them in this order, on SQL Server with the `AdventureWorks2025` database ava
 |------:|----------------------------------------------------------|-------------------------------------------------------|
 | 1     | `Scripts/ETL/ETL_Init_Database.sql`                      | Creates the database and the schemas                  |
 | 2     | `Scripts/ETL/ETL_Config_Table.sql`                       | Creates the configuration table                       |
+| 2b    | `Scripts/ETL/CDC/Enable_CDC_Source.sql`                  | Enables CDC on the source (in production: the DBA; SQL Server Agent must run) |
 | 3     | `Scripts/ETL/Audit/ETL_Batch.sql`, `ETL_Load_Audit.sql`, `ETL_Start_Batch.sql`, `ETL_Audit_Procedures.sql` | Create the run log (runs and steps) and its procedures |
 | 4     | `Scripts/ETL/Error_Event/ETL_Rejected_Table.sql`, `ETL_Data_quality_log.sql` | Create the quarantine and the quality log |
 | 5     | `Scripts/Bronze/Bronze_DDL.sql`                          | Creates the Bronze tables                             |
 | 6     | `Scripts/Silver/Silver_DDL.sql`                          | Creates the Silver tables and the sequences           |
 | 7     | `Scripts/Gold/Gold_DDL.sql`                              | Creates the fact table                                |
-| 8     | `Scripts/Bronze/Load_Bronze.sql`                         | Creates the Bronze load procedure                     |
+| 8     | `Scripts/Bronze/Load_Bronze_CDC.sql`, `Scripts/Bronze/Load_Bronze.sql` | Create the CDC load and the Bronze load procedure (in this order) |
 | 9     | `Scripts/Silver/Coding/...`                              | Create the quality checks and the Silver loads        |
 | 10    | `Scripts/Gold/Load_Fact_Sales_Order.sql`                 | Creates the Gold fact load                            |
 | 11    | Run the pipeline (or the procedures, in the order of the diagram above) | Loads the data                       |
@@ -197,7 +203,7 @@ Run them in this order, on SQL Server with the `AdventureWorks2025` database ava
 
 | Document                                                       | What you find                                                              |
 |----------------------------------------------------------------|----------------------------------------------------------------------------|
-| [Source System Analysis](Docs/Source_System_Analysis.md)   | The kick-off with the business and IT: ER diagram, business rules, load strategy |
+| [Source System Analysis](Docs/Source_System_Analysis.md)   | The kick-off with the business and IT: ER diagram, business rules, load strategy, and the follow-up on Change Data Capture |
 | [Naming Conventions](Docs/Naming_Conventions.md)                 | Every naming and design rule used in the data warehouse                    |
 | [SSIS Pipeline](Docs/SSIS_Pipeline.md)                         | How the pipeline works, step by step                                       |
 
