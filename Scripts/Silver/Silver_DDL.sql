@@ -13,6 +13,10 @@ Purpose:
     Every table has the same technical columns: row_hash,
     dwh_create_date, dwh_load_date, dwh_batch_id. SCD Type 2
     tables add dwh_start_date, dwh_end_date and is_active.
+    The tables of the incremental (CDC) objects add the soft
+    delete columns dwh_is_deleted and dwh_deleted_date: a row
+    deleted in the source is flagged, never removed, so the
+    history and the facts pointing to it are preserved.
 
 SSIS Usage:
     Not executed by SSIS. Run once at deployment, after the
@@ -152,7 +156,10 @@ CREATE TABLE silver.erp_product (
         CONSTRAINT DF_silver_erp_product_active DEFAULT 1,
     dwh_load_date              DATETIME2(3)   NOT NULL
         CONSTRAINT DF_silver_erp_product_load   DEFAULT SYSDATETIME(),
-    dwh_batch_id               BIGINT         NULL
+    dwh_batch_id               BIGINT         NULL,
+    dwh_is_deleted             BIT            NOT NULL
+        CONSTRAINT DF_silver_erp_product_dwh_is_deleted DEFAULT 0,   -- soft delete: 1 = deleted in the source
+    dwh_deleted_date           DATETIME2(3)   NULL
 );
 
 ALTER TABLE silver.erp_product
@@ -198,7 +205,10 @@ CREATE TABLE silver.erp_customer (
         CONSTRAINT DF_silver_erp_customer_active DEFAULT 1,
     dwh_load_date     DATETIME2(3)   NOT NULL
         CONSTRAINT DF_silver_erp_customer_load   DEFAULT SYSDATETIME(),
-    dwh_batch_id      BIGINT         NULL
+    dwh_batch_id      BIGINT         NULL,
+    dwh_is_deleted    BIT            NOT NULL
+        CONSTRAINT DF_silver_erp_customer_dwh_is_deleted DEFAULT 0,   -- soft delete: 1 = deleted in the source
+    dwh_deleted_date  DATETIME2(3)   NULL
 );
 
 ALTER TABLE silver.erp_customer
@@ -230,7 +240,10 @@ CREATE TABLE silver.erp_store (
         CONSTRAINT DF_silver_erp_store_create DEFAULT SYSDATETIME(),
     dwh_load_date     DATETIME2(3)   NOT NULL
         CONSTRAINT DF_silver_erp_store_load   DEFAULT SYSDATETIME(),
-    dwh_batch_id      BIGINT         NULL
+    dwh_batch_id      BIGINT         NULL,
+    dwh_is_deleted    BIT            NOT NULL
+        CONSTRAINT DF_silver_erp_store_dwh_is_deleted DEFAULT 0,   -- soft delete: 1 = deleted in the source
+    dwh_deleted_date  DATETIME2(3)   NULL
 );
 
 ALTER TABLE silver.erp_store
@@ -289,7 +302,10 @@ CREATE TABLE silver.erp_person (
         CONSTRAINT DF_silver_erp_person_create DEFAULT SYSDATETIME(),
     dwh_load_date     DATETIME2(3)   NOT NULL
         CONSTRAINT DF_silver_erp_person_load   DEFAULT SYSDATETIME(),
-    dwh_batch_id      BIGINT         NULL
+    dwh_batch_id      BIGINT         NULL,
+    dwh_is_deleted    BIT            NOT NULL
+        CONSTRAINT DF_silver_erp_person_dwh_is_deleted DEFAULT 0,   -- soft delete: 1 = deleted in the source
+    dwh_deleted_date  DATETIME2(3)   NULL
 );
 
 ALTER TABLE silver.erp_person
@@ -317,7 +333,10 @@ CREATE TABLE silver.erp_country_region (
         CONSTRAINT DF_silver_erp_country_region_create DEFAULT SYSDATETIME(),
     dwh_load_date     DATETIME2(3)   NOT NULL
         CONSTRAINT DF_silver_erp_country_region_load   DEFAULT SYSDATETIME(),
-    dwh_batch_id      BIGINT         NULL
+    dwh_batch_id      BIGINT         NULL,
+    dwh_is_deleted    BIT            NOT NULL
+        CONSTRAINT DF_silver_erp_country_region_dwh_is_deleted DEFAULT 0,   -- soft delete: 1 = deleted in the source
+    dwh_deleted_date  DATETIME2(3)   NULL
 );
 
 ALTER TABLE silver.erp_country_region
@@ -369,7 +388,10 @@ CREATE TABLE silver.erp_sales_person (
     dwh_load_date     DATETIME2(3)   NOT NULL
         CONSTRAINT DF_silver_erp_sales_person_load   DEFAULT SYSDATETIME(),
 
-    dwh_batch_id      BIGINT         NULL
+    dwh_batch_id      BIGINT         NULL,
+    dwh_is_deleted    BIT            NOT NULL
+        CONSTRAINT DF_silver_erp_sales_person_dwh_is_deleted DEFAULT 0,   -- soft delete: 1 = deleted in the source
+    dwh_deleted_date  DATETIME2(3)   NULL
 );
 
 ALTER TABLE silver.erp_sales_person
@@ -414,7 +436,10 @@ CREATE TABLE silver.erp_employee (
         CONSTRAINT DF_silver_erp_employee_create DEFAULT SYSDATETIME(),
     dwh_load_date      DATETIME2(3)   NOT NULL
         CONSTRAINT DF_silver_erp_employee_load   DEFAULT SYSDATETIME(),
-    dwh_batch_id       BIGINT         NULL
+    dwh_batch_id       BIGINT         NULL,
+    dwh_is_deleted     BIT            NOT NULL
+        CONSTRAINT DF_silver_erp_employee_dwh_is_deleted DEFAULT 0,   -- soft delete: 1 = deleted in the source
+    dwh_deleted_date   DATETIME2(3)   NULL
 );
 
 ALTER TABLE silver.erp_employee
@@ -455,7 +480,10 @@ CREATE TABLE silver.erp_person_address (
         CONSTRAINT DF_silver_person_address_create DEFAULT SYSDATETIME(),
     dwh_load_date       DATETIME2(3)    NOT NULL
         CONSTRAINT DF_silver_person_address_load   DEFAULT SYSDATETIME(),
-    dwh_batch_id        BIGINT          NULL
+    dwh_batch_id        BIGINT          NULL,
+    dwh_is_deleted      BIT            NOT NULL
+        CONSTRAINT DF_silver_erp_person_address_dwh_is_deleted DEFAULT 0,   -- soft delete: 1 = deleted in the source
+    dwh_deleted_date    DATETIME2(3)   NULL
 );
 
 ALTER TABLE silver.erp_person_address
@@ -493,7 +521,10 @@ CREATE TABLE silver.erp_state_province (
         CONSTRAINT DF_silver_state_province_create DEFAULT SYSDATETIME(),
     dwh_load_date       DATETIME2(3)    NOT NULL
         CONSTRAINT DF_silver_state_province_load   DEFAULT SYSDATETIME(),
-    dwh_batch_id        BIGINT          NULL
+    dwh_batch_id        BIGINT          NULL,
+    dwh_is_deleted      BIT            NOT NULL
+        CONSTRAINT DF_silver_erp_state_province_dwh_is_deleted DEFAULT 0,   -- soft delete: 1 = deleted in the source
+    dwh_deleted_date    DATETIME2(3)   NULL
 );
 
 ALTER TABLE silver.erp_state_province
@@ -582,7 +613,10 @@ CREATE TABLE silver.erp_sales_order_header (
         CONSTRAINT DF_silver_erp_sales_order_header_create DEFAULT SYSDATETIME(),
     dwh_load_date          DATETIME2(3)   NOT NULL
         CONSTRAINT DF_silver_erp_sales_order_header_load   DEFAULT SYSDATETIME(),
-    dwh_batch_id           BIGINT         NULL
+    dwh_batch_id           BIGINT         NULL,
+    dwh_is_deleted         BIT            NOT NULL
+        CONSTRAINT DF_silver_erp_sales_order_header_dwh_is_deleted DEFAULT 0,   -- soft delete: 1 = deleted in the source
+    dwh_deleted_date       DATETIME2(3)   NULL
 );
 
 ALTER TABLE silver.erp_sales_order_header
@@ -638,7 +672,10 @@ CREATE TABLE silver.erp_sales_order_detail (
         CONSTRAINT DF_silver_erp_sales_order_detail_create DEFAULT SYSDATETIME(),
     dwh_load_date          DATETIME2(3)    NOT NULL
         CONSTRAINT DF_silver_erp_sales_order_detail_load   DEFAULT SYSDATETIME(),
-    dwh_batch_id           BIGINT          NULL
+    dwh_batch_id           BIGINT          NULL,
+    dwh_is_deleted         BIT            NOT NULL
+        CONSTRAINT DF_silver_erp_sales_order_detail_dwh_is_deleted DEFAULT 0,   -- soft delete: 1 = deleted in the source
+    dwh_deleted_date       DATETIME2(3)   NULL
 );
 
 ----------------------------------------------------------
