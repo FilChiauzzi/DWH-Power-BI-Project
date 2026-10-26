@@ -29,6 +29,13 @@ Purpose:
     from its most recent batch) and never the deleted rows
     (dwh_operation = 'D'), which are handled separately.
 
+    Deletions (soft delete, SCD2): a key whose latest pending
+    Bronze version is a deletion (dwh_operation = 'D') gets its
+    active version closed (is_active = 0, dwh_end_date = load
+    time) and flagged dwh_is_deleted = 1; no new version is
+    opened. If the key comes back later, a new active version
+    is opened as for any changed key.
+
 SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline, after
     the Bronze quality check of the same object and after
@@ -346,7 +353,28 @@ BEGIN
 
                 PRINT '>> Delta rows (after quarantine): ' + CAST(@rows_src AS NVARCHAR(20));
 
-                IF @rows_src = 0
+                -- Deleted keys: latest pending version is a deletion ('D')
+                DECLARE @rows_deleted_src INT = 0, @rows_deleted INT = 0;
+
+                DROP TABLE IF EXISTS #src_deleted;
+
+                SELECT b.BusinessEntityID AS person_id
+                INTO #src_deleted
+                FROM bronze.erp_sales_person AS b
+                WHERE b.dwh_batch_id > @last_silver_batch_id
+                  AND b.dwh_operation = 'D'
+                  AND NOT EXISTS (
+                        SELECT 1
+                        FROM bronze.erp_sales_person AS newer
+                        WHERE newer.BusinessEntityID = b.BusinessEntityID
+                          AND newer.dwh_batch_id > b.dwh_batch_id
+                          AND newer.dwh_batch_id > @last_silver_batch_id
+                    );
+
+                SET @rows_deleted_src = @@ROWCOUNT;
+                PRINT '>> Deleted keys in source: ' + CAST(@rows_deleted_src AS NVARCHAR(20));
+
+                IF @rows_src = 0 AND @rows_deleted_src = 0
                 BEGIN
                     PRINT '>> No delta found. Nothing to do.';
                     DROP TABLE #src_delta;
@@ -423,6 +451,22 @@ BEGIN
 
                 SET @rows_inserted = @@ROWCOUNT;
 
+
+                -- Deletions (SCD2): close the active version, open none
+                UPDATE tgt
+                SET tgt.is_active        = 0,
+                    tgt.dwh_end_date     = @load_ts,
+                    tgt.dwh_is_deleted   = 1,
+                    tgt.dwh_deleted_date = @load_ts,
+                    tgt.dwh_load_date    = @load_ts,
+                    tgt.dwh_batch_id     = @batch_id
+                FROM silver.erp_sales_person AS tgt
+                INNER JOIN #src_deleted AS d
+                    ON tgt.person_id = d.person_id
+                WHERE tgt.is_active = 1;
+
+                SET @rows_deleted = @@ROWCOUNT;
+                PRINT '>> Rows deleted (versions closed): ' + CAST(@rows_deleted AS NVARCHAR(20));
 
             COMMIT TRANSACTION;
 

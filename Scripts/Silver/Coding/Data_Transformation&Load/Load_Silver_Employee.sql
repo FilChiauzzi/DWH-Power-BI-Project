@@ -28,6 +28,14 @@ Purpose:
     from its most recent batch) and never the deleted rows
     (dwh_operation = 'D'), which are handled separately.
 
+    Deletions (soft delete): a key whose latest pending
+    Bronze version is a deletion (dwh_operation = 'D') is not
+    removed from Silver: the row is kept and flagged
+    dwh_is_deleted = 1 with dwh_deleted_date, so history and
+    the facts pointing to it are preserved. If the key comes
+    back later (new insert in the source), the row is updated
+    and the flag is reset to 0.
+
 SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline, after
     the Bronze quality check of the same object and after
@@ -311,7 +319,28 @@ BEGIN
 
                 PRINT '>> Delta rows (after quarantine): ' + CAST(@rows_src AS NVARCHAR(20));
 
-            IF @rows_src = 0
+            -- Deleted keys: latest pending version is a deletion ('D')
+            DECLARE @rows_deleted_src INT = 0, @rows_deleted INT = 0;
+
+            DROP TABLE IF EXISTS #src_deleted;
+
+            SELECT b.BusinessEntityID AS business_entity_id
+            INTO #src_deleted
+            FROM bronze.erp_employee AS b
+            WHERE b.dwh_batch_id > @last_silver_batch_id
+              AND b.dwh_operation = 'D'
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM bronze.erp_employee AS newer
+                    WHERE newer.BusinessEntityID = b.BusinessEntityID
+                      AND newer.dwh_batch_id > b.dwh_batch_id
+                      AND newer.dwh_batch_id > @last_silver_batch_id
+                );
+
+            SET @rows_deleted_src = @@ROWCOUNT;
+            PRINT '>> Deleted keys in source: ' + CAST(@rows_deleted_src AS NVARCHAR(20));
+
+            IF @rows_src = 0 AND @rows_deleted_src = 0
             BEGIN
                 PRINT '>> No delta found. Nothing to do.';
                 DROP TABLE #src_delta;
@@ -345,11 +374,13 @@ BEGIN
                     tgt.person_sk        = src.person_sk,
                     tgt.row_hash         = src.row_hash,
                     tgt.dwh_load_date    = @load_ts,
-                    tgt.dwh_batch_id     = @batch_id
+                    tgt.dwh_batch_id     = @batch_id,
+                    tgt.dwh_is_deleted   = 0,
+                    tgt.dwh_deleted_date = NULL
                 FROM silver.erp_employee tgt
                 INNER JOIN #src_delta src
                     ON src.business_entity_id = tgt.business_entity_id
-                WHERE tgt.row_hash <> src.row_hash;
+                WHERE (tgt.row_hash <> src.row_hash OR tgt.dwh_is_deleted = 1);   -- changed, or back after a deletion
 
                 SET @rows_updated = @@ROWCOUNT;
 
@@ -385,6 +416,20 @@ BEGIN
 
                 SET @rows_inserted = @@ROWCOUNT;
 
+
+                -- Deletions (soft delete): keep the row, flag it
+                UPDATE tgt
+                SET tgt.dwh_is_deleted   = 1,
+                    tgt.dwh_deleted_date = @load_ts,
+                    tgt.dwh_load_date    = @load_ts,
+                    tgt.dwh_batch_id     = @batch_id
+                FROM silver.erp_employee AS tgt
+                INNER JOIN #src_deleted AS d
+                    ON tgt.business_entity_id = d.business_entity_id
+                WHERE tgt.dwh_is_deleted = 0;
+
+                SET @rows_deleted = @@ROWCOUNT;
+                PRINT '>> Rows deleted (flagged): ' + CAST(@rows_deleted AS NVARCHAR(20));
 
             COMMIT TRANSACTION;
 
