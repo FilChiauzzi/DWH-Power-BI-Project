@@ -18,7 +18,16 @@ Purpose:
          cdc   net changes between the bookmark and now
                (rows I / U / D);
          none  nothing new.
-    4. Writes the rows and saves the new bookmark in ONE
+    4. Volume checks, before writing anything:
+         full  an empty source (error 52005) or a source with
+               more than 50% fewer rows than the current
+               state of the Bronze (error 52006) stops the load;
+         cdc   more than 50% of the current rows deleted in
+               one night (error 52007) stops the load.
+       The current state of the Bronze is the latest version
+       of each key, deleted keys excluded. On error nothing is
+       written and the bookmark does not move.
+    5. Writes the rows and saves the new bookmark in ONE
        transaction: both or neither.
 
     CDC says WHICH rows changed and HOW; the values are read
@@ -35,6 +44,9 @@ SSIS Usage:
              @object_name = 'sales_order_detail',
              @batch_id    = 123,
              @debug       = 1;      -- prints the generated SQL
+    The thresholds of the volume checks are parameters
+    (@max_drop_pct, @max_del_pct, default 50): the pipeline
+    uses the defaults, a test can force them.
 
 Warning:
     CDC must be enabled on the source table with
@@ -54,6 +66,8 @@ CREATE OR ALTER PROCEDURE etl.usp_load_bronze_cdc
     @object_name   VARCHAR(50),
     @batch_id      BIGINT,
     @debug         BIT         = 0,        -- 1 = print the generated SQL
+    @max_drop_pct  INT         = 50,       -- full: more than 50% fewer rows than the current state = suspicious
+    @max_del_pct   INT         = 50,       -- cdc: more than 50% of the rows deleted in one night = suspicious
     @rows_inserted INT         = NULL OUTPUT,
     @mode          VARCHAR(10) = NULL OUTPUT
 AS
@@ -71,7 +85,10 @@ BEGIN
         @ci           SYSNAME,
         @cols         NVARCHAR(MAX), @cols_cdc     NVARCHAR(MAX),
         @join         NVARCHAR(MAX), @key_order    NVARCHAR(MAX),
-        @sql          NVARCHAR(MAX);
+        @sql          NVARCHAR(MAX),
+        @src_rows     BIGINT,        @state_rows   BIGINT,
+        @deleted_rows BIGINT,
+        @msg          NVARCHAR(400);
 
     BEGIN TRY
         ---------------------------------------------------------
@@ -170,6 +187,69 @@ BEGIN
             LEFT JOIN #keys  AS k ON k.column_name = c.name
             WHERE c.object_id = OBJECT_ID(@bronze_table)
               AND c.name NOT LIKE 'dwh[_]%';
+        END;
+
+        ---------------------------------------------------------
+        -- 5b. Volume checks, BEFORE writing anything
+        ---------------------------------------------------------
+        IF @mode <> 'none'
+        BEGIN
+            -- Current state of the Bronze: latest version of each key,
+            -- deleted keys excluded (= the source as we last saw it)
+            SET @sql =
+                N'SELECT @n = COUNT_BIG(*)' +
+                N' FROM (SELECT dwh_operation,' +
+                N'              ROW_NUMBER() OVER (PARTITION BY ' + @key_order +
+                N'                                 ORDER BY dwh_batch_id DESC, dwh_source_row_num DESC) AS rn' +
+                N'       FROM ' + @bronze_table + N') AS v' +
+                N' WHERE v.rn = 1 AND v.dwh_operation <> ''D'';';
+            EXEC sp_executesql @sql, N'@n BIGINT OUTPUT', @n = @state_rows OUTPUT;
+
+            IF @mode = 'full'
+            BEGIN
+                -- Rows of the source now
+                SET @sql = N'SELECT @n = COUNT_BIG(*) FROM ' + @source_table + N';';
+                EXEC sp_executesql @sql, N'@n BIGINT OUTPUT', @n = @src_rows OUTPUT;
+
+                IF @src_rows = 0
+                BEGIN
+                    SET @msg = CONCAT('Source is empty. Current Bronze state: ', @state_rows,
+                                      ' rows. Bronze left untouched.');
+                    THROW 52005, @msg, 1;
+                END;
+
+                IF @state_rows > 0
+                   AND @src_rows < @state_rows * (100 - @max_drop_pct) / 100.0
+                BEGIN
+                    SET @msg = CONCAT('Source has ', @src_rows, ' rows, current Bronze state ', @state_rows,
+                                      ': drop over ', @max_drop_pct, '%. Bronze left untouched.');
+                    THROW 52006, @msg, 1;
+                END;
+
+                PRINT CONCAT('>> Volume check ok: source ', @src_rows, ', current state ', @state_rows);
+            END
+            ELSE
+            BEGIN
+                -- Deletions in tonight's window, counted inside the source
+                SET @sql =
+                    N'SELECT @n = COUNT_BIG(*)' +
+                    N' FROM cdc.' + QUOTENAME(N'fn_cdc_get_net_changes_' + @ci) + N'(@from_lsn, @to_lsn, N''all'')' +
+                    N' WHERE __$operation = 1;';
+                EXEC @src_exec @sql,
+                     N'@from_lsn BINARY(10), @to_lsn BINARY(10), @n BIGINT OUTPUT',
+                     @from_lsn = @from_lsn, @to_lsn = @to_lsn, @n = @deleted_rows OUTPUT;
+
+                IF @state_rows > 0
+                   AND @deleted_rows > @state_rows * @max_del_pct / 100.0
+                BEGIN
+                    SET @msg = CONCAT(@deleted_rows, ' rows deleted in the source tonight, current Bronze state ',
+                                      @state_rows, ': over ', @max_del_pct,
+                                      '%. Mass delete? Nothing written, bookmark unchanged.');
+                    THROW 52007, @msg, 1;
+                END;
+
+                PRINT CONCAT('>> Delete check ok: ', @deleted_rows, ' deletions, current state ', @state_rows);
+            END;
         END;
 
         ---------------------------------------------------------
