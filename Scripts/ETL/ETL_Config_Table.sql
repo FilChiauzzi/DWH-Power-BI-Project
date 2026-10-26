@@ -15,6 +15,8 @@ Purpose:
     - incremental Bronze reads only the changes, with SQL
                   Server Change Data Capture (CDC must be
                   enabled on the source table).
+    Rule: an SCD2 object (scd_type = '2') must be incremental:
+    a full load truncates Silver and loses its history.
 
     Bookmarks:
     - last_lsn: Source -> Bronze, how far the CDC log was
@@ -76,9 +78,11 @@ GO
 
 ---------------------------------------------------------
 -- Configuration values
--- The 5 small objects are full; the other 10 have CDC
+-- category, subcategory, sales_territory and ship_method are
+-- small SCD1 objects and stay full. The other 11 have CDC
 -- enabled on the source and become incremental once DQ and
--- Silver handle the I / U / D rows.
+-- Silver handle the I / U / D rows (sales_person included:
+-- it is SCD2).
 ---------------------------------------------------------
 INSERT INTO etl.config (
     object_name, object_type, load_order, load_type, scd_type,
