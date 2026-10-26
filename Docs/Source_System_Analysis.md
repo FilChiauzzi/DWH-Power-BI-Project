@@ -268,10 +268,13 @@ The biggest table (`SalesOrderDetail`) has about 120,000 rows. Volumes are small
 ### 7.4 Protecting the source system
 
 - Extracts run at night, outside business hours.
-- Only the columns needed are read.
+- Bronze copies **all** the columns of the tables in scope: it is a faithful copy of the source, so a column needed tomorrow is already there. Only the columns needed by the reports go on to Silver. *(Follow-up: the kick-off said "only the columns needed are read"; changed when the extract system was reviewed.)*
+- XML columns (`Sales.Store.Demographics`, `Person.Person.Demographics`, `Person.Person.AdditionalContactInfo`) are kept **as XML** in Bronze and are not loaded into Silver in Release 1. If the business needs one of their fields (for example the annual sales of a store), it is extracted in Silver with XPath, instead of shredding the whole document.
 - Only the changed rows are read: with CDC the filter is the position in the transaction log (LSN), not `ModifiedDate`.
 - No complex joins in the source queries: the joins are made in the DWH.
 - No `NOLOCK` hint without the approval of IT.
+- Every Bronze load counts the source **before** emptying anything: an empty source, a drop of more than 50% compared with the last load, or more than 50% of the rows deleted in one night stops the load, and Bronze keeps the previous data.
+- After every load the rows of the source and of Bronze are reconciled (full: rows counted vs rows copied; CDC: current state of Bronze vs rows of the source). A difference is logged as a warning in `etl.data_quality_log`.
 
 ### 7.5 Access and security
 
