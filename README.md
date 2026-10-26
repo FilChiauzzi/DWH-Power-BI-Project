@@ -138,7 +138,8 @@ The pipeline contains **no business logic**: it only calls stored procedures. A 
 | **Change detection**       | CDC tells which rows changed; in Silver a hash of each row tells whether a new version is needed |
 | **Deletes**                | Soft delete: a row deleted in the source is flagged in Silver, excluded from the Gold fact, kept in the dimensions |
 | **Recovery**               | Two bookmarks (`last_lsn`, `last_silver_batch_id`) move only when their step succeeds: a failed run is caught up by the next one |
-| **Safe by design**         | A full load never empties a table when the source is empty                                      |
+| **Safe by design**         | Volume checks before every Bronze load: an empty or shrunken source, or a mass delete, stops the load and keeps the previous data |
+| **Reconciliation**         | After every Bronze load the rows of the source and of Bronze are compared; differences are logged |
 
 ---
 
