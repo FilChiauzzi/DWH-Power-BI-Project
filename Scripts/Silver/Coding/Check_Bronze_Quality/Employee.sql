@@ -14,6 +14,16 @@ Purpose:
     Every execution is logged in etl.load_audit (layer silver,
     step dq_check): status, duration, row counts and, on
     failure, the error.
+
+    Rows checked (CDC):
+    only the Bronze rows that Silver will load: batch greater
+    than last_silver_batch_id in etl.config, latest version of
+    each key (when a key arrived in several pending batches,
+    only its most recent batch is checked, exactly like the
+    Silver load), deleted rows (dwh_operation = 'D') excluded:
+    they carry only the key. With a full load Bronze holds only
+    the current batch, so every row is checked as before.
+
 SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline,
     before the Silver load of the same object. SSIS passes
@@ -74,10 +84,34 @@ BEGIN
         BEGIN TRANSACTION;
 
         ---------------------------------------------------------
-        -- Count source rows
+        -- Rows to check (CDC aware)
         ---------------------------------------------------------
+        -- Rows to check: Bronze rows that Silver will load.
+        --   * batch greater than the Silver register;
+        --   * latest batch of each key (older pending versions are
+        --     superseded, Silver loads only the latest);
+        --   * deleted rows excluded: a D row carries only its key.
+        DECLARE @last_silver_batch_id BIGINT =
+            (SELECT ISNULL(last_silver_batch_id, 0)
+             FROM etl.config
+             WHERE object_name = 'employee');
+
+        DROP TABLE IF EXISTS #b;
+
+        SELECT *
+        INTO #b
+        FROM (
+            SELECT b.*,
+                   DENSE_RANK() OVER (PARTITION BY b.BusinessEntityID
+                                      ORDER BY b.dwh_batch_id DESC) AS dwh_version_rank
+            FROM bronze.erp_employee AS b
+            WHERE b.dwh_batch_id > @last_silver_batch_id
+        ) AS pending
+        WHERE pending.dwh_version_rank = 1
+          AND pending.dwh_operation <> 'D';
+
         SELECT @rows_checked = COUNT(*)
-        FROM bronze.erp_employee;
+        FROM #b;
 
         ---------------------------------------------------------
         -- RULE 0: source empty -> warning
@@ -88,7 +122,7 @@ BEGIN
                 (batch_id, layer, object_name, check_name, record_id, description, severity)
             VALUES
                 (@batch_id, 'bronze', 'employee', 'Source empty', NULL,
-                 'bronze.erp_employee contains no rows', 'warning');
+                 'No Bronze rows to check: nothing new, or only deletions', 'warning');
         END
 
         ---------------------------------------------------------
@@ -103,7 +137,7 @@ BEGIN
                NULL,
                'BusinessEntityID is NULL',
                'error'
-        FROM bronze.erp_employee
+        FROM #b
         WHERE BusinessEntityID IS NULL;
 
         INSERT INTO etl.rejected
@@ -122,7 +156,7 @@ BEGIN
                     'CurrentFlag': CurrentFlag,
                     'ModifiedDate': ModifiedDate
                NULL ON NULL)
-        FROM bronze.erp_employee
+        FROM #b
         WHERE BusinessEntityID IS NULL;
 
         ---------------------------------------------------------
@@ -137,7 +171,7 @@ BEGIN
                CAST(b.BusinessEntityID AS NVARCHAR(200)),
                'Duplicate BusinessEntityID detected: ' + CAST(COUNT(*) AS VARCHAR(10)) + ' rows',
                'error'
-        FROM bronze.erp_employee AS b
+        FROM #b AS b
         GROUP BY b.BusinessEntityID
         HAVING COUNT(*) > 1;
 
@@ -157,10 +191,10 @@ BEGIN
                     'CurrentFlag': b.CurrentFlag,
                     'ModifiedDate': b.ModifiedDate
                NULL ON NULL)
-        FROM bronze.erp_employee AS b
+        FROM #b AS b
         INNER JOIN (
             SELECT BusinessEntityID, COUNT(*) AS cnt
-            FROM bronze.erp_employee
+            FROM #b
             GROUP BY BusinessEntityID
             HAVING COUNT(*) > 1
         ) AS d
@@ -178,7 +212,7 @@ BEGIN
                CAST(b.BusinessEntityID AS NVARCHAR(200)),
                'JobTitle is NULL',
                'warning'
-        FROM bronze.erp_employee AS b
+        FROM #b AS b
         WHERE b.JobTitle IS NULL
            OR LTRIM(RTRIM(b.JobTitle)) = '';
 
@@ -194,7 +228,7 @@ BEGIN
                CAST(b.BusinessEntityID AS NVARCHAR(200)),
                'Gender is NULL',
                'warning'
-        FROM bronze.erp_employee AS b
+        FROM #b AS b
         WHERE b.Gender IS NULL;
 
         ---------------------------------------------------------
@@ -209,7 +243,7 @@ BEGIN
                CAST(b.BusinessEntityID AS NVARCHAR(200)),
                'HireDate is NULL',
                'warning'
-        FROM bronze.erp_employee AS b
+        FROM #b AS b
         WHERE b.HireDate IS NULL;
 
         ---------------------------------------------------------
@@ -224,7 +258,7 @@ BEGIN
                CAST(b.BusinessEntityID AS NVARCHAR(200)),
                'CurrentFlag is NULL',
                'warning'
-        FROM bronze.erp_employee AS b
+        FROM #b AS b
         WHERE b.CurrentFlag IS NULL;
 
         COMMIT TRANSACTION;

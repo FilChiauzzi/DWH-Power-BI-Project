@@ -14,6 +14,16 @@ Purpose:
     Every execution is logged in etl.load_audit (layer silver,
     step dq_check): status, duration, row counts and, on
     failure, the error.
+
+    Rows checked (CDC):
+    only the Bronze rows that Silver will load: batch greater
+    than last_silver_batch_id in etl.config, latest version of
+    each key (when a key arrived in several pending batches,
+    only its most recent batch is checked, exactly like the
+    Silver load), deleted rows (dwh_operation = 'D') excluded:
+    they carry only the key. With a full load Bronze holds only
+    the current batch, so every row is checked as before.
+
 SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline,
     before the Silver load of the same object. SSIS passes
@@ -75,10 +85,34 @@ BEGIN
         BEGIN TRANSACTION;
 
         ---------------------------------------------------------
-        -- Count source rows
+        -- Rows to check (CDC aware)
         ---------------------------------------------------------
+        -- Rows to check: Bronze rows that Silver will load.
+        --   * batch greater than the Silver register;
+        --   * latest batch of each key (older pending versions are
+        --     superseded, Silver loads only the latest);
+        --   * deleted rows excluded: a D row carries only its key.
+        DECLARE @last_silver_batch_id BIGINT =
+            (SELECT ISNULL(last_silver_batch_id, 0)
+             FROM etl.config
+             WHERE object_name = 'product');
+
+        DROP TABLE IF EXISTS #b;
+
+        SELECT *
+        INTO #b
+        FROM (
+            SELECT b.*,
+                   DENSE_RANK() OVER (PARTITION BY b.ProductID
+                                      ORDER BY b.dwh_batch_id DESC) AS dwh_version_rank
+            FROM bronze.erp_product AS b
+            WHERE b.dwh_batch_id > @last_silver_batch_id
+        ) AS pending
+        WHERE pending.dwh_version_rank = 1
+          AND pending.dwh_operation <> 'D';
+
         SELECT @rows_checked = COUNT(*)
-        FROM bronze.erp_product;
+        FROM #b;
 
         IF @rows_checked = 0
         BEGIN
@@ -86,7 +120,7 @@ BEGIN
                 (batch_id, layer, object_name, check_name, record_id, description, severity)
             VALUES
                 (@batch_id, 'bronze', 'product', 'Source empty', NULL,
-                 'bronze.erp_product contains no rows', 'warning');
+                 'No Bronze rows to check: nothing new, or only deletions', 'warning');
         END
 
         ---------------------------------------------------------
@@ -99,7 +133,7 @@ BEGIN
                CAST(p.ProductID AS NVARCHAR(200)),
                'ProductID is NULL',
                'critical'
-        FROM bronze.erp_product AS p
+        FROM #b AS p
         WHERE p.ProductID IS NULL;
 
         INSERT INTO etl.rejected
@@ -115,7 +149,7 @@ BEGIN
                            'ProductNumber': p.ProductNumber,
                            'ProductSubcategoryID': p.ProductSubcategoryID
                            NULL ON NULL)
-        FROM bronze.erp_product AS p
+        FROM #b AS p
         WHERE p.ProductID IS NULL;
 
         ---------------------------------------------------------
@@ -128,7 +162,7 @@ BEGIN
                CAST(p.ProductID AS NVARCHAR(200)),
                'Duplicate ProductID detected: ' + CAST(COUNT(*) AS VARCHAR(10)) + ' rows',
                'critical'
-        FROM bronze.erp_product AS p
+        FROM #b AS p
         GROUP BY p.ProductID
         HAVING COUNT(*) > 1;
 
@@ -145,10 +179,10 @@ BEGIN
                            'ProductNumber': p.ProductNumber,
                            'ProductSubcategoryID': p.ProductSubcategoryID
                            NULL ON NULL)
-        FROM bronze.erp_product AS p
+        FROM #b AS p
         INNER JOIN (
             SELECT ProductID
-            FROM bronze.erp_product
+            FROM #b
             GROUP BY ProductID
             HAVING COUNT(*) > 1
         ) AS d
@@ -164,7 +198,7 @@ BEGIN
                CAST(p.ProductID AS NVARCHAR(200)),
                'Name is NULL or empty',
                'error'
-        FROM bronze.erp_product AS p
+        FROM #b AS p
         WHERE p.Name IS NULL
            OR LTRIM(RTRIM(p.Name)) = '';
 
@@ -178,7 +212,7 @@ BEGIN
                CAST(p.ProductID AS NVARCHAR(200)),
                'ProductNumber is NULL or empty',
                'error'
-        FROM bronze.erp_product AS p
+        FROM #b AS p
         WHERE p.ProductNumber IS NULL
            OR LTRIM(RTRIM(p.ProductNumber)) = '';
 
@@ -192,7 +226,7 @@ BEGIN
                CAST(p.ProductID AS NVARCHAR(200)),
                'SellStartDate is NULL',
                'error'
-        FROM bronze.erp_product AS p
+        FROM #b AS p
         WHERE p.SellStartDate IS NULL;
 
         ---------------------------------------------------------
@@ -205,7 +239,7 @@ BEGIN
                CAST(p.ProductID AS NVARCHAR(200)),
                'ProductSubcategoryID is NULL',
                'error'
-        FROM bronze.erp_product AS p
+        FROM #b AS p
         WHERE p.ProductSubcategoryID IS NULL;
 
         ---------------------------------------------------------
@@ -218,7 +252,7 @@ BEGIN
                CAST(p.ProductID AS NVARCHAR(200)),
                'One or more numeric fields are negative or NULL',
                'error'
-        FROM bronze.erp_product AS p
+        FROM #b AS p
         WHERE p.StandardCost < 0 OR p.StandardCost IS NULL
            OR p.ListPrice < 0 OR p.ListPrice IS NULL
            OR p.SafetyStockLevel < 0 OR p.SafetyStockLevel IS NULL
@@ -236,7 +270,7 @@ BEGIN
                CAST(p.ProductID AS NVARCHAR(200)),
                'SizeUnitMeasureCode or WeightUnitMeasureCode is NULL',
                'error'
-        FROM bronze.erp_product AS p
+        FROM #b AS p
         WHERE p.SizeUnitMeasureCode IS NULL
            OR p.WeightUnitMeasureCode IS NULL;
 
@@ -250,7 +284,7 @@ BEGIN
                CAST(p.ProductID AS NVARCHAR(200)),
                'One or more descriptive fields are empty',
                'warning'
-        FROM bronze.erp_product AS p
+        FROM #b AS p
         WHERE LTRIM(RTRIM(p.Color)) = ''
            OR LTRIM(RTRIM(p.Size)) = ''
            OR LTRIM(RTRIM(p.ProductLine)) = ''

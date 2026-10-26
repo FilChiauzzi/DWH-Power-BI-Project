@@ -16,6 +16,16 @@ Purpose:
     Every execution is logged in etl.load_audit (layer silver,
     step dq_check): status, duration, row counts and, on
     failure, the error.
+
+    Rows checked (CDC):
+    only the Bronze rows that Silver will load: batch greater
+    than last_silver_batch_id in etl.config, latest version of
+    each key (when a key arrived in several pending batches,
+    only its most recent batch is checked, exactly like the
+    Silver load), deleted rows (dwh_operation = 'D') excluded:
+    they carry only the key. With a full load Bronze holds only
+    the current batch, so every row is checked as before.
+
 SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline,
     before the Silver load of the same object. SSIS passes
@@ -76,10 +86,34 @@ BEGIN
         BEGIN TRANSACTION;
 
             ---------------------------------------------------------
-            -- Count source rows
+            -- Rows to check (CDC aware)
             ---------------------------------------------------------
+            -- Rows to check: Bronze rows that Silver will load.
+            --   * batch greater than the Silver register;
+            --   * latest batch of each key (older pending versions are
+            --     superseded, Silver loads only the latest);
+            --   * deleted rows excluded: a D row carries only its key.
+            DECLARE @last_silver_batch_id BIGINT =
+                (SELECT ISNULL(last_silver_batch_id, 0)
+                 FROM etl.config
+                 WHERE object_name = 'sales_order_detail');
+
+            DROP TABLE IF EXISTS #b;
+
+            SELECT *
+            INTO #b
+            FROM (
+                SELECT b.*,
+                       DENSE_RANK() OVER (PARTITION BY b.SalesOrderID, b.SalesOrderDetailID
+                                          ORDER BY b.dwh_batch_id DESC) AS dwh_version_rank
+                FROM bronze.erp_sales_order_detail AS b
+                WHERE b.dwh_batch_id > @last_silver_batch_id
+            ) AS pending
+            WHERE pending.dwh_version_rank = 1
+              AND pending.dwh_operation <> 'D';
+
             SELECT @rows_checked = COUNT(*)
-            FROM bronze.erp_sales_order_detail;
+            FROM #b;
 
             ---------------------------------------------------------
             -- RULE 0: source empty -> warning
@@ -90,7 +124,7 @@ BEGIN
                     (batch_id, layer, object_name, check_name, record_id, description, severity)
                 VALUES
                     (@batch_id, 'bronze', 'sales_order_detail', 'Source empty', NULL,
-                     'bronze.erp_sales_order_detail contains no rows', 'warning');
+                     'No Bronze rows to check: nothing new, or only deletions', 'warning');
             END
 
             ---------------------------------------------------------
@@ -105,7 +139,7 @@ BEGIN
                    CAST(b.SalesOrderID AS NVARCHAR(200)),
                    'SalesOrderID is NULL',
                    'error'
-            FROM bronze.erp_sales_order_detail AS b
+            FROM #b AS b
             WHERE b.SalesOrderID IS NULL;
 
             INSERT INTO etl.rejected
@@ -133,7 +167,7 @@ BEGIN
                         'dwh_source_row_num': b.dwh_source_row_num
                         NULL ON NULL
                    )
-            FROM bronze.erp_sales_order_detail AS b
+            FROM #b AS b
             WHERE b.SalesOrderID IS NULL;
 
             ---------------------------------------------------------
@@ -148,7 +182,7 @@ BEGIN
                    CONCAT(b.SalesOrderID, '-', b.SalesOrderDetailID),
                    'SalesOrderDetailID is NULL',
                    'error'
-            FROM bronze.erp_sales_order_detail AS b
+            FROM #b AS b
             WHERE b.SalesOrderDetailID IS NULL;
 
             INSERT INTO etl.rejected
@@ -176,7 +210,7 @@ BEGIN
                         'dwh_source_row_num': b.dwh_source_row_num
                         NULL ON NULL
                    )
-            FROM bronze.erp_sales_order_detail AS b
+            FROM #b AS b
             WHERE b.SalesOrderDetailID IS NULL;
 
             ---------------------------------------------------------
@@ -193,11 +227,11 @@ BEGIN
                    'error'
             FROM (
                 SELECT SalesOrderID, SalesOrderDetailID
-                FROM bronze.erp_sales_order_detail
+                FROM #b
                 GROUP BY SalesOrderID, SalesOrderDetailID
                 HAVING COUNT(*) > 1
             ) d
-            JOIN bronze.erp_sales_order_detail b
+            JOIN #b b
                 ON b.SalesOrderID = d.SalesOrderID
                AND b.SalesOrderDetailID = d.SalesOrderDetailID;
 
@@ -228,11 +262,11 @@ BEGIN
                    )
             FROM (
                 SELECT SalesOrderID, SalesOrderDetailID
-                FROM bronze.erp_sales_order_detail
+                FROM #b
                 GROUP BY SalesOrderID, SalesOrderDetailID
                 HAVING COUNT(*) > 1
             ) d
-            JOIN bronze.erp_sales_order_detail b
+            JOIN #b b
                 ON b.SalesOrderID = d.SalesOrderID
                AND b.SalesOrderDetailID = d.SalesOrderDetailID;
 
@@ -248,7 +282,7 @@ BEGIN
                    'OrderQty invalid',
                    'OrderQty <= 0',
                    'error'
-            FROM bronze.erp_sales_order_detail b
+            FROM #b b
             WHERE b.OrderQty <= 0;
 
             INSERT INTO etl.rejected
@@ -273,7 +307,7 @@ BEGIN
                         'dwh_source_row_num': b.dwh_source_row_num
                         NULL ON NULL
                    )
-            FROM bronze.erp_sales_order_detail b
+            FROM #b b
             WHERE b.OrderQty <= 0;
 
             ---------------------------------------------------------
@@ -288,7 +322,7 @@ BEGIN
                    'Negative price',
                    'UnitPrice or UnitPriceDiscount < 0',
                    'error'
-            FROM bronze.erp_sales_order_detail b
+            FROM #b b
             WHERE b.UnitPrice < 0
                OR b.UnitPriceDiscount < 0;
 
@@ -312,7 +346,7 @@ BEGIN
                         'dwh_source_row_num': b.dwh_source_row_num
                         NULL ON NULL
                    )
-            FROM bronze.erp_sales_order_detail b
+            FROM #b b
             WHERE b.UnitPrice < 0
                OR b.UnitPriceDiscount < 0;
 
@@ -328,7 +362,7 @@ BEGIN
                    'LineTotal mismatch',
                    'LineTotal <> UnitPrice * (1 - UnitPriceDiscount) * OrderQty (tolerance 0.01)',
                    'error'
-            FROM bronze.erp_sales_order_detail b
+            FROM #b b
             WHERE ABS(b.LineTotal
                       - CAST(b.UnitPrice AS DECIMAL(19,4))
                       * (1 - CAST(b.UnitPriceDiscount AS DECIMAL(9,4)))
@@ -355,7 +389,7 @@ BEGIN
                         'dwh_source_row_num': b.dwh_source_row_num
                         NULL ON NULL
                    )
-            FROM bronze.erp_sales_order_detail b
+            FROM #b b
             WHERE ABS(b.LineTotal
                       - CAST(b.UnitPrice AS DECIMAL(19,4))
                       * (1 - CAST(b.UnitPriceDiscount AS DECIMAL(9,4)))
