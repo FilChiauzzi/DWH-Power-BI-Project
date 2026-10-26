@@ -13,6 +13,7 @@
 7. [Extract & Load Strategy](#7-extract--load-strategy)
 8. [Decisions and Open Questions](#8-decisions-and-open-questions)
 9. [Next Steps](#9-next-steps)
+10. [Follow-up: Change Data Capture](#10-follow-up-change-data-capture)
 
 ---
 
@@ -73,7 +74,7 @@ Order-to-cash is the process in scope: a customer (shop or individual) places a 
 | Schemas              | `Sales`, `Production`, `Person`, `HumanResources`, `Purchasing`, `dbo`                    |
 | Environment          | We read from a copy of the production database, on the same SQL Server instance as the DWH |
 | Integration method   | Direct read with SQL queries (three-part names, for example `AdventureWorks2025.Sales.Store`) |
-| Change tracking      | **CDC is not enabled**. Every table has a `ModifiedDate` column, filled by the application |
+| Change tracking      | **CDC is not enabled**. Every table has a `ModifiedDate` column, filled by the application. *Follow-up: CDC was enabled on the 11 incremental tables, see [section 10](#10-follow-up-change-data-capture)* |
 | Access               | A dedicated ETL account with **SELECT only** permission on the schemas in scope           |
 | Availability window  | Extracts run **at night, outside business hours**                                         |
 | Volumes              | Small: the biggest table has about 120,000 rows (see [section 4.2](#42-tables-in-scope))  |
@@ -125,21 +126,23 @@ Points to notice in the diagram:
 |---------------------------------|------------------------------------------|---------------------------------------|-------------:|--------------------------------|-------------|---------|
 | `Production.ProductCategory`    | Product categories                       | `ProductCategoryID`                   | 4            | Almost never                   | Full        | SCD1    |
 | `Production.ProductSubcategory` | Product subcategories                    | `ProductSubcategoryID`                | 37           | Almost never                   | Full        | SCD1    |
-| `Production.Product`            | Products with price and cost             | `ProductID`                           | 500          | Price and cost change          | Full / incr.| SCD2    |
-| `Sales.Customer`                | Customers (shop or individual)           | `CustomerID`                          | 20,000       | Store, person or territory change | Full / incr. | SCD2 |
-| `Sales.Store`                   | Shops that buy                           | `BusinessEntityID`                    | 700          | Rarely                         | Full        | SCD1    |
-| `Sales.SalesPerson`             | Sales people, quota, commission          | `BusinessEntityID`                    | 17           | Territory, quota and bonus change | Full / incr. | SCD2 |
-| `Sales.SalesTerritory`          | Sales territories                        | `TerritoryID`                         | 10           | Almost never                   | Full only   | SCD1    |
-| `Purchasing.ShipMethod`         | Shipping methods and costs               | `ShipMethodID`                        | 5            | Almost never                   | Full only   | SCD1    |
-| `Sales.SalesOrderHeader`        | One row per order                        | `SalesOrderID`                        | 31,000       | New orders, ship date and status | Incremental | SCD1  |
-| `Sales.SalesOrderDetail`        | One row per order line                   | `SalesOrderID` + `SalesOrderDetailID` | 121,000      | New lines                      | Incremental | SCD1    |
-| `Person.Person`                 | People (customers and employees)         | `BusinessEntityID`                    | 20,000       | Name changes                   | Full / incr.| SCD1    |
-| `Person.Address`                | Addresses                                | `AddressID`                           | 19,600       | Rarely                         | Full / incr.| SCD1    |
-| `Person.StateProvince`          | States and provinces                     | `StateProvinceID`                     | 181          | Almost never                   | Full / incr.| SCD1    |
-| `Person.CountryRegion`          | Countries                                | `CountryRegionCode`                   | 238          | Almost never                   | Full / incr.| SCD1    |
-| `HumanResources.Employee`       | Employees                                | `BusinessEntityID`                    | 290          | Job title, status              | Full / incr.| SCD1    |
+| `Production.Product`            | Products with price and cost             | `ProductID`                           | 500          | Price and cost change          | Incremental (CDC) | SCD2    |
+| `Sales.Customer`                | Customers (shop or individual)           | `CustomerID`                          | 20,000       | Store, person or territory change | Incremental (CDC) | SCD2 |
+| `Sales.Store`                   | Shops that buy                           | `BusinessEntityID`                    | 700          | Rarely                         | Incremental (CDC) | SCD1    |
+| `Sales.SalesPerson`             | Sales people, quota, commission          | `BusinessEntityID`                    | 17           | Territory, quota and bonus change | Incremental (CDC) | SCD2 |
+| `Sales.SalesTerritory`          | Sales territories                        | `TerritoryID`                         | 10           | Almost never                   | Full        | SCD1    |
+| `Purchasing.ShipMethod`         | Shipping methods and costs               | `ShipMethodID`                        | 5            | Almost never                   | Full        | SCD1    |
+| `Sales.SalesOrderHeader`        | One row per order                        | `SalesOrderID`                        | 31,000       | New orders, ship date and status | Incremental (CDC) | SCD1  |
+| `Sales.SalesOrderDetail`        | One row per order line                   | `SalesOrderID` + `SalesOrderDetailID` | 121,000      | New lines                      | Incremental (CDC) | SCD1    |
+| `Person.Person`                 | People (customers and employees)         | `BusinessEntityID`                    | 20,000       | Name changes                   | Incremental (CDC) | SCD1    |
+| `Person.Address`                | Addresses                                | `AddressID`                           | 19,600       | Rarely                         | Incremental (CDC) | SCD1    |
+| `Person.StateProvince`          | States and provinces                     | `StateProvinceID`                     | 181          | Almost never                   | Incremental (CDC) | SCD1    |
+| `Person.CountryRegion`          | Countries                                | `CountryRegionCode`                   | 238          | Almost never                   | Incremental (CDC) | SCD1    |
+| `HumanResources.Employee`       | Employees                                | `BusinessEntityID`                    | 290          | Job title, status              | Incremental (CDC) | SCD1    |
 
 > Row counts are the approximate figures reported by IT at the meeting. They are confirmed with a `COUNT(*)` on each table during the first load.
+>
+> *Follow-up:* the Load column shows the final decision taken after the analysis of [section 10](#10-follow-up-change-data-capture): the 4 small SCD1 lookup tables stay full, every other table is loaded incrementally with CDC.
 
 ### 4.3 Tables out of scope (first release)
 
@@ -219,7 +222,7 @@ The source system **overwrites** values: it does not keep the old ones. The busi
 
 - Orders are **never deleted**: a cancelled order stays in the database with status 6.
 - When a header changes (ship date, status), the **detail rows are not touched** and their `ModifiedDate` does not change. For this reason the delta of the DWH cannot rely on the detail `ModifiedDate` alone.
-- `ModifiedDate` is maintained by the application and is reliable for the transactional tables. For small lookup tables IT recommends a **full reload**.
+- `ModifiedDate` is maintained by the application and is reliable for the transactional tables. For small lookup tables IT recommends a **full reload**. *Follow-up: the analysis of [section 10](#10-follow-up-change-data-capture) showed that changes made by scripts do not update `ModifiedDate`.*
 - A missing value must never block the reporting: when a name or a code is missing, the report shows **Unknown**.
 
 ---
@@ -250,7 +253,7 @@ Every finding is stored in a quality log and every rejected row is kept with its
 | Type            | Used for                                                    | How                                                           |
 |-----------------|-------------------------------------------------------------|---------------------------------------------------------------|
 | **Full**        | Small lookup and master tables (up to a few thousand rows)  | Reload the whole table every night                            |
-| **Incremental** | Orders: header and detail                                   | Read the rows with `ModifiedDate` greater than the last value |
+| **Incremental** | Orders: header and detail                                   | Read the rows with `ModifiedDate` greater than the last value. *Follow-up: replaced by SQL Server CDC, see [section 10](#10-follow-up-change-data-capture)* |
 
 The first load of every table is a full load. The load type of each table is a **setting**, not code: it can be changed without touching the procedures.
 
@@ -266,7 +269,7 @@ The biggest table (`SalesOrderDetail`) has about 120,000 rows. Volumes are small
 
 - Extracts run at night, outside business hours.
 - Only the columns needed are read.
-- Filters use `ModifiedDate`.
+- Only the changed rows are read: with CDC the filter is the position in the transaction log (LSN), not `ModifiedDate`.
 - No complex joins in the source queries: the joins are made in the DWH.
 - No `NOLOCK` hint without the approval of IT.
 
@@ -296,6 +299,8 @@ A nightly refresh, orchestrated by SQL Server Integration Services (SSIS) and st
 | Order amounts        | The header total is allocated to the lines, the last line takes the rounding remainder    | Lines must add up to the header total                          |
 | Quality              | Quality checks before the Silver load, with a quarantine for blocking rows                | See [section 6](#6-data-quality-expectations)                  |
 | Orchestration        | One metadata table drives the pipeline (objects, order, load type, active flag)           | New objects without new packages                               |
+| Change detection     | SQL Server Change Data Capture on the 11 incremental tables (follow-up)                   | `ModifiedDate` misses script changes and deletes, see [section 10](#10-follow-up-change-data-capture) |
+| Deletes              | Soft delete in Silver (`dwh_is_deleted`), excluded from the Gold fact                     | History and past facts are preserved                           |
 
 ### 8.2 Open questions
 
@@ -317,3 +322,48 @@ A nightly refresh, orchestrated by SQL Server Integration Services (SSIS) and st
 4. Build the quality checks and the Silver layer, with the history agreed in [section 5.3](#53-history-what-the-business-wants-to-track).
 5. Build the Gold star schema and connect Power BI.
 6. Validate the totals of the DWH against the source with the Finance controller.
+
+---
+
+## 10. Follow-up: Change Data Capture
+
+> This section was added **after** the kick-off, when the incremental load was designed. It records what we verified on the source and the decision we took with IT.
+
+### 10.1 Requirement
+
+The business asked for data that is **correct every day**. A weekly full reload to catch up missed changes was not accepted.
+
+### 10.2 Can `ModifiedDate` be trusted?
+
+Kimball (*The Data Warehouse Toolkit*, chapter 19, subsystem 2) warns that audit columns filled by the application must be tested: back-end scripts may change data without updating them, and deletes are never visible. We checked who updates `ModifiedDate` in the source:
+
+| Check | Result |
+|---|---|
+| Triggers on the tables in scope | `uSalesOrderHeader`, `iduSalesOrderDetail`, `iuPerson`, `dEmployee`: **none of them** updates `ModifiedDate` |
+| What the order triggers do | A change to an order line recalculates `SubTotal` of the header and `SalesYTD` of the sales person and the territory, without touching their `ModifiedDate` |
+| Test: `UPDATE Sales.SalesOrderHeader SET Status = 4` without setting the date | `ModifiedDate` stays `2022-06-06`: a watermark on the date would never see the change |
+| Deletes | Not visible with a watermark |
+
+**Conclusion:** `ModifiedDate` is reliable only if every change goes through the application. It cannot guarantee daily correctness.
+
+### 10.3 Options evaluated
+
+| Technique (Kimball) | Script changes | Deletes | Cost | Decision |
+|---|---|---|---|---|
+| Audit column (`ModifiedDate` watermark) | ❌ | ❌ | Low | Rejected |
+| Full diff compare (row hash of every row, every night) | ✅ | ✅ | Reads the whole source every night | Valid for these volumes, not chosen |
+| SQL Server Change Tracking | ✅ | ✅ | Low; values read again from the source | Valid |
+| **SQL Server Change Data Capture (log based)** | ✅ | ✅ | Low; needs SQL Server Agent | **Chosen** |
+
+### 10.4 Decision
+
+| Item | Decision |
+|---|---|
+| Tables | CDC on the 11 incremental tables: product, store, country region, person, customer, employee, sales person, state province, address, order header, order detail |
+| Full tables | Category, subcategory, sales territory, ship method: small SCD1 lookups, reloaded every night |
+| Rule | An SCD2 table (product, customer, sales person) is always incremental: a full reload of Silver would lose its history |
+| Who enables CDC | In production, the **database administrator** (`sysadmin` on the database, `db_owner` on the tables). Script: `Scripts/ETL/CDC/Enable_CDC_Source.sql` |
+| SQL Server Agent | Must run on the source: the capture job reads the log, the cleanup job deletes changes older than **3 days** |
+| Retention | If the pipeline stops for more than 3 days, the Bronze load detects that its bookmark is older than the CDC retention and reloads the table in full; Silver stays incremental, so no history is lost |
+| Values | CDC says which rows changed and how (insert, update, delete); the values are read from the source table, because CDC does not store computed columns (`TotalDue`, `SalesOrderNumber`, `LineTotal`, `AccountNumber`, `OrganizationLevel`) |
+| Deletes | Kept in the DWH as **soft deletes**: the Silver row is flagged `dwh_is_deleted = 1` (SCD2: the active version is closed); the Gold fact excludes them, the dimensions keep them |
