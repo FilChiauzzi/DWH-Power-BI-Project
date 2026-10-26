@@ -8,7 +8,11 @@ Purpose:
 
     load_type full
         truncates and reloads the table in one transaction
-        (every row dwh_operation = 'F').
+        (every row dwh_operation = 'F'). Before emptying the
+        table a volume check compares the source with the
+        last load: an empty source (error 51004) or a drop of
+        more than 50% (error 51005) stops the load and leaves
+        the Bronze table untouched.
     load_type incremental
         delegates to etl.usp_load_bronze_cdc, which reads
         only the changes with SQL Server Change Data Capture
@@ -93,7 +97,11 @@ BEGIN
             @bronze_table VARCHAR(200),
             @cdc_mode     VARCHAR(10),
             @cols         NVARCHAR(MAX),
-            @sql          NVARCHAR(MAX);
+            @sql          NVARCHAR(MAX),
+            @src_rows     BIGINT,
+            @bronze_rows  BIGINT,
+            @max_drop_pct INT = 50,          -- more than 50% fewer rows than the last load = suspicious
+            @msg          NVARCHAR(400);
 
         ---------------------------------------------------------
         -- Read metadata from config table
@@ -154,6 +162,34 @@ BEGIN
 
             IF @cols IS NULL
                 THROW 51002, 'Bronze table not found in sys.columns. Check bronze_table in etl.config.', 1;
+
+            -----------------------------------------------------
+            -- Volume check, BEFORE emptying the Bronze table:
+            -- an empty source, or a source with much fewer rows
+            -- than the last load, stops the load and leaves the
+            -- Bronze table untouched.
+            -----------------------------------------------------
+            SET @sql = N'SELECT @n = COUNT_BIG(*) FROM ' + @source_table + N';';
+            EXEC sp_executesql @sql, N'@n BIGINT OUTPUT', @n = @src_rows OUTPUT;
+
+            SET @sql = N'SELECT @n = COUNT_BIG(*) FROM ' + @bronze_table + N';';
+            EXEC sp_executesql @sql, N'@n BIGINT OUTPUT', @n = @bronze_rows OUTPUT;
+
+            IF @src_rows = 0
+            BEGIN
+                SET @msg = CONCAT('Source is empty. Last load: ', @bronze_rows, ' rows. Bronze left untouched.');
+                THROW 51004, @msg, 1;
+            END;
+
+            IF @bronze_rows > 0
+               AND @src_rows < @bronze_rows * (100 - @max_drop_pct) / 100.0
+            BEGIN
+                SET @msg = CONCAT('Source has ', @src_rows, ' rows, last load ', @bronze_rows,
+                                  ': drop over ', @max_drop_pct, '%. Bronze left untouched.');
+                THROW 51005, @msg, 1;
+            END;
+
+            PRINT CONCAT('>> Volume check ok: source ', @src_rows, ', last load ', @bronze_rows);
 
             BEGIN TRANSACTION;
 
