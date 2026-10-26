@@ -9,6 +9,10 @@ Purpose:
     province, the country and the sales territory, together
     with latitude and longitude.
 
+    Deleted members are kept, not filtered: facts of the past
+    must still find them. is_deleted = 1 marks a member
+    deleted in the source (soft delete in Silver).
+
 SSIS Usage:
     Not executed by SSIS. Run once at deployment, after the
     Silver tables exist. The view is read directly by Power
@@ -61,7 +65,8 @@ SELECT
     -- Technical fields (from Address)
     ---------------------------------------------------------
     a.dwh_create_date,
-    a.dwh_load_date
+    a.dwh_load_date,
+    a.dwh_is_deleted AS is_deleted          -- 1 = address deleted in the source (soft delete)
 
 FROM silver.erp_person_address AS a
 LEFT JOIN silver.erp_state_province AS sp

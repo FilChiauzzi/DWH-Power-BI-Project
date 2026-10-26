@@ -11,6 +11,10 @@ Purpose:
     country, together with quota, bonus, commission and
     sales figures.
 
+    Deleted members are kept, not filtered: facts of the past
+    must still find them. is_deleted = 1 marks a member
+    deleted in the source (soft delete in Silver).
+
 SSIS Usage:
     Not executed by SSIS. Run once at deployment, after the
     Silver tables exist. The view is read directly by Power
@@ -52,7 +56,8 @@ SELECT
     sp.sales_last_year,
     sp.dwh_start_date,
     sp.dwh_end_date,
-    sp.is_active
+    sp.is_active,
+    sp.dwh_is_deleted AS is_deleted         -- 1 = deleted in the source (soft delete)
 FROM silver.erp_sales_person sp
 LEFT JOIN silver.erp_person p
        ON sp.person_id = p.person_id

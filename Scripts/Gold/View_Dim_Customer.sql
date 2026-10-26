@@ -14,6 +14,10 @@ Purpose:
     The validity dates and is_active are kept, so facts can
     be joined to the version valid at the order date.
 
+    Deleted members are kept, not filtered: facts of the past
+    must still find them. is_deleted = 1 marks a member
+    deleted in the source (soft delete in Silver).
+
 SSIS Usage:
     Not executed by SSIS. Run once at deployment, after the
     Silver tables exist. The view is read directly by Power
@@ -52,6 +56,7 @@ SELECT
     ,cs.dwh_start_date
     ,cs.dwh_end_date
     ,cs.is_active
+    ,cs.dwh_is_deleted AS is_deleted        -- 1 = deleted in the source (soft delete)
 FROM silver.erp_customer cs
 LEFT JOIN silver.erp_person pe
        ON cs.person_sk = pe.person_sk

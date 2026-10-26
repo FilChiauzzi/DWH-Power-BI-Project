@@ -10,6 +10,10 @@ Purpose:
     shown as 'Unknown'. Validity dates are cast to DATE and
     is_active marks the current version.
 
+    Deleted members are kept, not filtered: facts of the past
+    must still find them. is_deleted = 1 marks a member
+    deleted in the source (soft delete in Silver).
+
 SSIS Usage:
     Not executed by SSIS. Run once at deployment, after the
     Silver tables exist. The view is read directly by Power
@@ -46,7 +50,8 @@ SELECT
     COALESCE(c.category_name, 'Unknown') AS category_name,
     CAST(p.dwh_start_date AS DATE) AS dwh_start_date,
     CAST(p.dwh_end_date AS DATE) AS dwh_end_date,
-    p.is_active
+    p.is_active,
+    p.dwh_is_deleted AS is_deleted          -- 1 = deleted in the source (soft delete)
 FROM silver.erp_product p
 LEFT JOIN silver.erp_subcategory sc
     ON p.product_subcategory_sk = sc.subcategory_sk

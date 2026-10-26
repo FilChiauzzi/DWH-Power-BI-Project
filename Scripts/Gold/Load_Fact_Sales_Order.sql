@@ -26,6 +26,11 @@ Purpose:
     Every execution is logged in etl.load_audit (layer gold,
     step load): status, duration, row counts and, on
     failure, the error.
+    Soft delete: order lines and orders flagged as deleted in
+    Silver (dwh_is_deleted = 1) are excluded before the
+    allocation of total_due, so a deleted order or line never
+    counts in the sales.
+
 SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline as the
     last step of the batch, after the Silver header and
@@ -134,6 +139,8 @@ BEGIN
                 FROM silver.erp_sales_order_detail d
                 INNER JOIN silver.erp_sales_order_header h
                     ON d.sales_order_id = h.sales_order_id
+                WHERE d.dwh_is_deleted = 0      -- soft delete: lines deleted in the source excluded
+                  AND h.dwh_is_deleted = 0      -- soft delete: orders deleted in the source excluded
             ),
             calc AS (
                 SELECT
@@ -336,6 +343,8 @@ BEGIN
                 FROM silver.erp_sales_order_detail d
                 INNER JOIN silver.erp_sales_order_header h
                     ON d.sales_order_id = h.sales_order_id
+                WHERE d.dwh_is_deleted = 0      -- soft delete: lines deleted in the source excluded
+                  AND h.dwh_is_deleted = 0      -- soft delete: orders deleted in the source excluded
             ),
             calc AS (
                 SELECT
