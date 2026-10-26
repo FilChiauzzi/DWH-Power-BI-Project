@@ -21,6 +21,13 @@ Purpose:
     Every execution is logged in etl.load_audit (layer silver,
     step load): status, duration, row counts and, on
     failure, the error.
+    Incremental rows (CDC): Silver reads the Bronze rows not
+    yet processed (dwh_batch_id > last_silver_batch_id in
+    etl.config), only the latest version of each key (a key
+    that arrived in several pending batches is loaded once,
+    from its most recent batch) and never the deleted rows
+    (dwh_operation = 'D'), which are handled separately.
+
 SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline, after
     the Bronze quality check of the same object and after
@@ -237,6 +244,14 @@ BEGIN
         SELECT @last_silver_load = ISNULL(MAX(dwh_load_date), '1900-01-01')
         FROM silver.erp_customer;
 
+        -- Bronze -> Silver register: last batch processed with success
+        DECLARE @last_silver_batch_id BIGINT =
+            (SELECT ISNULL(last_silver_batch_id, 0)
+             FROM etl.config
+             WHERE object_name = 'customer');
+
+        PRINT '>> Silver register (last batch processed): ' + CAST(@last_silver_batch_id AS NVARCHAR(20));
+
                 ---------------------------------------------------------
                 -- Build DELTA source set (#src_delta)
                 ---------------------------------------------------------
@@ -269,7 +284,15 @@ BEGIN
                     ON c.StoreID = s.store_id
                 LEFT JOIN silver.erp_sales_territory t
                     ON c.TerritoryID = t.territory_id
-                WHERE c.dwh_load_date > @last_silver_load
+                WHERE c.dwh_batch_id > @last_silver_batch_id          -- not yet processed by Silver
+                  AND c.dwh_operation <> 'D'                         -- deletions handled separately
+                  AND NOT EXISTS (                                      -- latest version of the key only
+                        SELECT 1
+                        FROM bronze.erp_customer AS newer
+                        WHERE newer.CustomerID = c.CustomerID
+                          AND newer.dwh_batch_id > c.dwh_batch_id
+                          AND newer.dwh_batch_id > @last_silver_batch_id
+                    )
                   AND NOT EXISTS (
                         SELECT 1
                         FROM etl.rejected r
@@ -287,7 +310,7 @@ BEGIN
                 BEGIN
                     PRINT '>> No delta found. Nothing to do.';
                     DROP TABLE #src_delta;
-                    ROLLBACK TRANSACTION;
+                    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
 
                     SET @end_time = SYSDATETIME();
                     PRINT '>> INCREMENTAL load completed (no changes)';

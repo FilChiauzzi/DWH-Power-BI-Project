@@ -24,6 +24,13 @@ Purpose:
     Every execution is logged in etl.load_audit (layer silver,
     step load): status, duration, row counts and, on
     failure, the error.
+    Incremental rows (CDC): Silver reads the Bronze rows not
+    yet processed (dwh_batch_id > last_silver_batch_id in
+    etl.config), only the latest version of each key (a key
+    that arrived in several pending batches is loaded once,
+    from its most recent batch) and never the deleted rows
+    (dwh_operation = 'D'), which are handled separately.
+
 SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline, after
     the Bronze quality check of the same object and after
@@ -269,6 +276,14 @@ BEGIN
             SELECT @last_silver_load = ISNULL(MAX(dwh_load_date), '1900-01-01')
             FROM silver.erp_person_address;
 
+            -- Bronze -> Silver register: last batch processed with success
+            DECLARE @last_silver_batch_id BIGINT =
+                (SELECT ISNULL(last_silver_batch_id, 0)
+                 FROM etl.config
+                 WHERE object_name = 'person_address');
+
+            PRINT '>> Silver register (last batch processed): ' + CAST(@last_silver_batch_id AS NVARCHAR(20));
+
             PRINT '>> Last Silver load: ' + CONVERT(NVARCHAR(30), @last_silver_load, 121);
 
             -----------------------------------------------------
@@ -303,7 +318,15 @@ BEGIN
                     b.SpatialLocation.Lat  AS latitude,
                     b.SpatialLocation.Long AS longitude
                 FROM bronze.erp_person_address b
-                WHERE b.dwh_load_date > @last_silver_load
+                WHERE b.dwh_batch_id > @last_silver_batch_id          -- not yet processed by Silver
+                  AND b.dwh_operation <> 'D'                         -- deletions handled separately
+                  AND NOT EXISTS (                                      -- latest version of the key only
+                        SELECT 1
+                        FROM bronze.erp_person_address AS newer
+                        WHERE newer.AddressID = b.AddressID
+                          AND newer.dwh_batch_id > b.dwh_batch_id
+                          AND newer.dwh_batch_id > @last_silver_batch_id
+                    )
                   AND b.AddressID IS NOT NULL
                   AND NOT EXISTS (
                         SELECT 1
