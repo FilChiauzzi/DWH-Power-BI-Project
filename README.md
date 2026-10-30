@@ -31,7 +31,8 @@ This project builds a complete **data warehouse** for sales analysis, from the r
 |----------------------------------------|-----------------|
 | Source analysis and documentation      | ✅ Done         |
 | Bronze layer (raw data)                | ✅ Done         |
-| Quality checks and quarantine          | ✅ Done         |
+| Quality checks and quarantine          | ✅ Done: column, structure and business rule screens; only unidentifiable rows are set aside |
+| Error event schema (Kimball)           | ✅ Done: screen catalog, error event fact and detail fact |
 | Run log (audit of every run and step)  | ✅ Done         |
 | Change Data Capture (incremental loads)| ✅ Done: 11 tables, deletes as soft delete |
 | Silver layer (clean data, history)     | ✅ Done         |
@@ -51,7 +52,7 @@ Develop a modern data warehouse using SQL Server and SSIS for the ETL orchestrat
 **Specifications**
 
 * **Data Sources:** Import data from the SQL Server OLTP database AdventureWorks2025.
-* **Data Quality:** Check and clean the data before analysis. Blocking rows go to a quarantine table, every finding is logged.
+* **Data Quality:** Check and clean the data before analysis. Every finding is recorded in a Kimball error event schema; only rows that cannot be identified go to a quarantine table, the others pass and stay traceable.
 * **Integration:** Data enrichment (a configuration table drives the load, derived columns) and denormalization, to provide an efficient star schema to BI tools and analytical queries.
 * **Scope:** Keep the history of the data with SCD type 1 and 2, and detect anomalies with quality checks.
 * **Documentation:** Provide clear documentation of the data model for business stakeholders and for the analytics team.
@@ -131,7 +132,7 @@ The pipeline contains **no business logic**: it only calls stored procedures. A 
 |----------------------------|------------------------------------------------------------------------------------------------|
 | **Metadata-driven**        | Objects, order, load type and on/off switch live in a configuration table                       |
 | **Full and incremental**   | 4 small lookup tables are reloaded; the other 11 are loaded with **SQL Server Change Data Capture**: every change is captured from the transaction log, also when it is made by a script or is a delete |
-| **Data quality**           | Rules per table, a log of every finding, a quarantine for bad rows, a stop when too many are bad |
+| **Data quality**           | Quality screens of three types (column, structure, business rule); every error recorded in the error event schema (screen catalog, error event fact, detail fact); quarantine only for rows without a usable key; a stop when too many rows are bad |
 | **History**                | SCD type 2 for product, customer and sales person; type 1 for everything else                   |
 | **Traceability**           | Every row carries the run (`batch_id`) and the load date                                        |
 | **Run log (audit)**        | Every step of every run is logged: status, duration, row counts and errors                     |
@@ -166,7 +167,7 @@ Release 1 delivers the full path from the source to the star schema. The next re
 │   ├── ETL/       Database, schemas and configuration
 │   │   ├── Audit/        Run log: runs, steps and their procedures
 │   │   ├── CDC/          Change Data Capture on the source
-│   │   ├── Error_Event/  Quality log and quarantine
+│   │   ├── Error_Event/  Error event schema (screens, error facts) and quarantine
 │   │   └── Profiling/    Source profiling
 │   ├── Bronze/    Raw tables and the generic Bronze load
 │   ├── Silver/    Clean tables, quality checks and Silver loads
@@ -188,7 +189,7 @@ Run them in this order, on SQL Server with the `AdventureWorks2025` database ava
 | 2     | `Scripts/ETL/ETL_Config_Table.sql`                       | Creates the configuration table                       |
 | 2b    | `Scripts/ETL/CDC/Enable_CDC_Source.sql`                  | Enables CDC on the source (in production: the DBA; SQL Server Agent must run) |
 | 3     | `Scripts/ETL/Audit/ETL_Batch.sql`, `ETL_Load_Audit.sql`, `ETL_Start_Batch.sql`, `ETL_Audit_Procedures.sql` | Create the run log (runs and steps) and its procedures |
-| 4     | `Scripts/ETL/Error_Event/ETL_Rejected_Table.sql`, `ETL_Data_quality_log.sql` | Create the quarantine and the quality log |
+| 4     | `Scripts/ETL/Error_Event/ETL_Rejected_Table.sql`, `ETL_Error_Event_Schema.sql`, `ETL_Error_Event_Screens.sql` | Create the quarantine, the error event schema and the screen catalog (on an existing database, then `Migration_Error_Event.sql`) |
 | 5     | `Scripts/Bronze/Bronze_DDL.sql`                          | Creates the Bronze tables                             |
 | 6     | `Scripts/Silver/Silver_DDL.sql`                          | Creates the Silver tables and the sequences           |
 | 7     | `Scripts/Gold/Gold_DDL.sql`                              | Creates the fact table                                |
@@ -207,6 +208,7 @@ Run them in this order, on SQL Server with the `AdventureWorks2025` database ava
 | [Source System Analysis](Docs/Source_System_Analysis.md)   | The kick-off with the business and IT: ER diagram, business rules, load strategy, and the follow-up on Change Data Capture |
 | [Naming Conventions](Docs/Naming_Conventions.md)                 | Every naming and design rule used in the data warehouse                    |
 | [SSIS Pipeline](Docs/SSIS_Pipeline.md)                         | How the pipeline works, step by step                                       |
+| [Data Quality](Docs/Data_Quality.md)                           | Quality screens, response policy and the Kimball error event schema         |
 
 ---
 

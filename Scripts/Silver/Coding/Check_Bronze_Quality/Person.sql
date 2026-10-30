@@ -8,8 +8,8 @@ Purpose:
     FirstName or LastName NULL or empty is a warning (Silver
     uses 'Unknown').
 
-    Blocking errors quarantine the row; non-blocking
-    warnings are only logged.
+    Critical findings set the row aside; errors and
+    warnings are only logged (see the severity policy).
 
     Every execution is logged in etl.load_audit (layer silver,
     step dq_check): status, duration, row counts and, on
@@ -39,8 +39,8 @@ SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline,
     before the Silver load of the same object. SSIS passes
     @batch_id and @max_reject_rate (default 20). Every
-    finding is logged in etl.data_quality_log; blocking
-    errors are also quarantined in etl.rejected with a JSON
+    finding is logged in etl.data_quality_log; critical
+    findings are also quarantined in etl.rejected with a JSON
     copy of the raw row.
 
 Warning:

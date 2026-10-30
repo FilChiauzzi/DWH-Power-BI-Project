@@ -132,7 +132,7 @@ Rules:
 - Every SCD1 table has `row_hash`, `dwh_create_date`, `dwh_load_date`, `dwh_batch_id`. SCD2 tables add `dwh_start_date`, `dwh_end_date`, `is_active`.
 
 ### **Quality Columns**
-Used in `etl.data_quality_log` and `etl.rejected`.
+Used in `etl.data_quality_log` (now a view on the error event schema, see [Data Quality](Data_Quality.md)) and `etl.rejected`.
 
 `etl.data_quality_log` (every finding, warnings included):
 - `dq_log_key`  
@@ -250,15 +250,15 @@ Rules:
 - Codes must be uppercase.
 - Codes must be stable across entities: use the generic code whenever one exists.
 - Codes must be descriptive but short, in the form `<NULL|DUP>_<what>`.
-- A rule code is written only when the row is **quarantined** in `etl.rejected`.
+- A rule code is written only when the row is **quarantined** in `etl.rejected`, that is for `critical` screens only.
 
 Severity levels (`severity`):
 
 | Severity   | Meaning                                                              | Where it is written                         |
 |------------|----------------------------------------------------------------------|---------------------------------------------|
-| `critical` | Key problem, the row cannot be used                                  | `etl.data_quality_log` and `etl.rejected`   |
-| `error`    | Blocking problem. Key and foreign-key errors also exclude the row    | `etl.data_quality_log` (and `etl.rejected` for key and foreign-key rules) |
-| `warning`  | The row is accepted, Silver repairs it (for example with `Unknown`)  | `etl.data_quality_log` only                 |
+| `critical` | Key NULL or duplicated: the row cannot be identified                 | Error event schema and `etl.rejected` (row set aside) |
+| `error`    | The row is identified but a value is wrong                           | Error event schema only (the row passes; a missing parent becomes `-1`) |
+| `warning`  | The row is accepted, Silver repairs it (for example with `Unknown`)  | Error event schema only (the row passes)   |
 
 Naming of `check_name` in `etl.data_quality_log`:
 - `<Column> NULL`  
@@ -297,9 +297,14 @@ Rules:
 | `etl.load_audit`       | One row per step of a run (one object, one layer, one step): status, duration, row counts, watermark, error |
 | `etl.vw_last_successful_load` | Last successful step of every object, layer and step                    |
 | `etl.rejected`         | The quarantine of blocking rows                                                |
-| `etl.data_quality_log` | Every finding of the quality checks (append-only: never deleted)               |
+| `etl.dim_screen`       | Screen Dimension: one row per quality screen (type, module, definition, severity, exception action) |
+| `etl.dim_table`, `etl.dim_field`, `etl.bridge_screen_field` | The tables and fields checked by the screens |
+| `etl.fact_error_event` | Error Event Fact: every error thrown by a screen (append-only)                 |
+| `etl.fact_error_event_detail` | Error Event Detail Fact: every field of a record involved in an error   |
+| `etl.data_quality_log` | **View** on the error event facts, with the columns of the original log; an INSTEAD OF trigger accepts the inserts of the quality checks |
+| `etl.vw_error_event_daily` | Error events per day, object, screen type and severity                     |
 
-`etl.batch` and `etl.load_audit` answer *"did the **process** work?"* (folder `Scripts/ETL/Audit`). `etl.data_quality_log` and `etl.rejected` answer *"are the **data** good?"* (folder `Scripts/ETL/Error_Event`).
+`etl.batch` and `etl.load_audit` answer *"did the **process** work?"* (folder `Scripts/ETL/Audit`). The error event schema and `etl.rejected` answer *"are the **data** good?"* (folder `Scripts/ETL/Error_Event`, described in [Data Quality](Data_Quality.md)).
 
 Rules for `etl.config`:
 - `object_name` is the entity in lowercase snake_case, **without** `erp_` (`sales_order_header`). The same value is used in `etl.rejected.object_name` and `etl.data_quality_log.object_name`.
