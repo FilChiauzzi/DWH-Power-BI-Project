@@ -171,7 +171,7 @@ BEGIN
                     NEXT VALUE FOR dwh.seq_silver_subcategory OVER (ORDER BY src.subcategory_id),
                     src.subcategory_id,
                     src.subcategory_name,
-                    tc.category_sk,
+                    ISNULL(tc.category_sk, -1),          -- category not found: unknown member
                     src.row_hash,
                     @load_ts,
                     @load_ts,
@@ -289,7 +289,7 @@ BEGIN
                 -- UPDATE changed rows (hash or category_sk differs)
                 UPDATE tgt
                 SET tgt.subcategory_name = src.subcategory_name,
-                    tgt.category_sk      = tc.category_sk,
+                    tgt.category_sk      = ISNULL(tc.category_sk, -1),          -- category not found: unknown member
                     tgt.row_hash         = src.row_hash,
                     tgt.dwh_load_date    = @load_ts,
                     tgt.dwh_batch_id     = @batch_id
@@ -310,7 +310,7 @@ BEGIN
                     NEXT VALUE FOR dwh.seq_silver_subcategory OVER (ORDER BY src.subcategory_id),
                     src.subcategory_id,
                     src.subcategory_name,
-                    tc.category_sk,
+                    ISNULL(tc.category_sk, -1),          -- category not found: unknown member
                     src.row_hash,
                     @load_ts,
                     @load_ts,
