@@ -32,7 +32,7 @@ Purpose:
     6. State reconciliation: after writing, the current state
        of the Bronze must have as many rows as the source.
        A difference is logged as a warning in
-       etl.data_quality_log (the source may change after the
+       the error event schema (the source may change after the
        end of the window): it is the proof that CDC lost
        nothing.
 
@@ -340,12 +340,18 @@ BEGIN
 
             IF @state_rows <> @src_rows
             BEGIN
-                INSERT INTO etl.data_quality_log
-                    (batch_id, layer, object_name, check_name, record_id, description, severity)
-                VALUES
-                    (@batch_id, 'bronze', @object_name, 'State reconciliation', NULL,
-                     CONCAT('Current Bronze state ', @state_rows, ' rows, source ', @src_rows,
-                            ' rows (mode ', @mode, ')'), 'warning');
+                DROP TABLE IF EXISTS #errors;
+                CREATE TABLE #errors (row_id INT IDENTITY(1,1), screen_name NVARCHAR(200), screen_type VARCHAR(20),
+                                      severity VARCHAR(20), exception_action VARCHAR(20), fields NVARCHAR(400),
+                                      record_id NVARCHAR(200), error_condition NVARCHAR(500));
+
+                INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+                VALUES ('State reconciliation', 'business rule', 'warning', 'pass', '', NULL,
+                        CONCAT('Current Bronze state ', @state_rows, ' rows, source ', @src_rows,
+                            ' rows (mode ', @mode, ')'));
+
+                EXEC etl.usp_save_error_events @batch_id = @batch_id, @layer = 'bronze',
+                     @object_name = @object_name, @etl_module = '[etl].[usp_load_bronze_cdc]';
 
                 PRINT CONCAT('>> WARNING state: Bronze ', @state_rows, ', source ', @src_rows);
             END

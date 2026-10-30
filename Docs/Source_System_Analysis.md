@@ -274,7 +274,7 @@ The biggest table (`SalesOrderDetail`) has about 120,000 rows. Volumes are small
 - No complex joins in the source queries: the joins are made in the DWH.
 - No `NOLOCK` hint without the approval of IT.
 - Every Bronze load counts the source **before** emptying anything: an empty source, a drop of more than 50% compared with the last load, or more than 50% of the rows deleted in one night stops the load, and Bronze keeps the previous data.
-- After every load the rows of the source and of Bronze are reconciled (full: rows counted vs rows copied; CDC: current state of Bronze vs rows of the source). A difference is logged as a warning in `etl.data_quality_log`.
+- After every load the rows of the source and of Bronze are reconciled (full: rows counted vs rows copied; CDC: current state of Bronze vs rows of the source). A difference is recorded as a warning in the error event schema.
 
 ### 7.5 Access and security
 

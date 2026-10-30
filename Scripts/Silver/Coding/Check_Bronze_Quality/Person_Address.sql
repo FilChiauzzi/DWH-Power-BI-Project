@@ -43,7 +43,7 @@ SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline,
     before the Silver load of the same object. SSIS passes
     @batch_id and @max_reject_rate (default 20). Every
-    finding is logged in etl.data_quality_log; critical
+    finding is logged in the error event schema; critical
     findings are also quarantined in etl.rejected with a JSON
     copy of the raw row.
 
@@ -124,16 +124,20 @@ BEGIN
             SELECT @rows_checked = COUNT(*)
             FROM #b;
 
+            -- The errors found by the screens (saved at the end by etl.usp_save_error_events)
+            DROP TABLE IF EXISTS #errors;
+            CREATE TABLE #errors (row_id INT IDENTITY(1,1), screen_name NVARCHAR(200), screen_type VARCHAR(20),
+                                  severity VARCHAR(20), exception_action VARCHAR(20), fields NVARCHAR(400),
+                                  record_id NVARCHAR(200), error_condition NVARCHAR(500));
+
             ---------------------------------------------------------
             -- RULE 0: source empty -> warning
             ---------------------------------------------------------
             IF @rows_checked = 0
             BEGIN
-                INSERT INTO etl.data_quality_log
-                    (batch_id, layer, object_name, check_name, record_id, description, severity)
-                VALUES
-                    (@batch_id, 'bronze', 'person_address', 'Source empty', NULL,
-                     'No Bronze rows to check: nothing new, or only deletions', 'warning');
+                INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+                VALUES ('Source empty', 'business rule', 'warning', 'pass', '', NULL,
+                        'No Bronze rows to check: nothing new, or only deletions');
             END
 
             ---------------------------------------------------------
@@ -141,13 +145,10 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 1: AddressID NULL';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'person_address',
-                   'AddressID NULL',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'AddressID NULL', 'column', 'critical', 'set aside', '',
                    NULL,
-                   'AddressID is NULL',
-                   'critical'
+                   'AddressID is NULL'
             FROM #b
             WHERE AddressID IS NULL;
 
@@ -173,13 +174,10 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 2: Duplicate AddressID';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'person_address',
-                   'Duplicate AddressID',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'Duplicate AddressID', 'structure', 'critical', 'set aside', '',
                    CAST(AddressID AS NVARCHAR(200)),
-                   'Duplicate AddressID detected: ' + CAST(COUNT(*) AS VARCHAR(10)) + ' rows',
-                   'critical'
+                   'Duplicate AddressID detected: ' + CAST(COUNT(*) AS VARCHAR(10)) + ' rows'
             FROM #b
             GROUP BY AddressID
             HAVING COUNT(*) > 1;
@@ -212,13 +210,10 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 3: City NULL (warning)';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'person_address',
-                   'City NULL',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'City NULL', 'column', 'warning', 'pass', '',
                    CAST(AddressID AS NVARCHAR(200)),
-                   'City is NULL - Silver substitutes ''Unknown''',
-                   'warning'
+                   'City is NULL - Silver substitutes ''Unknown'''
             FROM #b
             WHERE City IS NULL;
 
@@ -227,13 +222,10 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 4: StateProvinceID NULL';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'person_address',
-                   'StateProvinceID NULL',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'StateProvinceID NULL', 'column', 'error', 'pass', '',
                    CAST(AddressID AS NVARCHAR(200)),
-                   'StateProvinceID is NULL',
-                   'error'
+                   'StateProvinceID is NULL'
             FROM #b
             WHERE StateProvinceID IS NULL;
 
@@ -242,46 +234,42 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 5: PostalCode NULL (warning)';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'person_address',
-                   'PostalCode NULL',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'PostalCode NULL', 'column', 'warning', 'pass', '',
                    CAST(AddressID AS NVARCHAR(200)),
-                   'PostalCode is NULL - Silver substitutes ''Unknown''',
-                   'warning'
+                   'PostalCode is NULL - Silver substitutes ''Unknown'''
             FROM #b
             WHERE PostalCode IS NULL;
-
 
             ---------------------------------------------------------
             -- RULE 6: State/province not found in Silver -> error (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 6: State/province not found (error)';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'person_address',
-                   'State/province not found',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'State/province not found', 'structure', 'error', 'pass', 'StateProvinceID',
                    CAST(x.AddressID AS NVARCHAR(200)),
-                   CONCAT('StateProvinceID ', x.StateProvinceID, ' does not exist in silver.erp_state_province - Silver uses -1'),
-                   'error'
+                   CONCAT('StateProvinceID ', x.StateProvinceID, ' does not exist in silver.erp_state_province - Silver uses -1')
             FROM #b AS x
             WHERE x.StateProvinceID IS NOT NULL                 -- a NULL is not a broken relationship
               AND NOT EXISTS (SELECT 1
                               FROM silver.erp_state_province AS p
                               WHERE p.state_province_id = x.StateProvinceID);
 
+            -- Save the errors in the error event schema (same transaction as the screens)
+            SELECT @errors = COUNT(*) FROM #errors WHERE severity IN ('error', 'critical');
+
+            EXEC etl.usp_save_error_events
+                 @batch_id    = @batch_id,
+                 @layer       = 'bronze',
+                 @object_name = 'person_address',
+                 @etl_module  = @proc_name;
+
         COMMIT TRANSACTION;
 
         ---------------------------------------------------------
         -- Summary
         ---------------------------------------------------------
-        SELECT @errors = COUNT(*)
-        FROM etl.data_quality_log
-        WHERE batch_id   = @batch_id
-          AND layer       = 'bronze'
-          AND object_name = 'person_address'
-          AND severity IN ('error','critical');
 
         SELECT @rows_rejected = COUNT(*)
         FROM etl.rejected

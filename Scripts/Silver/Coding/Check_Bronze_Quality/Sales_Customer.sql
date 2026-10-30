@@ -46,7 +46,7 @@ SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline,
     before the Silver load of the same object. SSIS passes
     @batch_id and @max_reject_rate (default 20). Every
-    finding is logged in etl.data_quality_log; critical
+    finding is logged in the error event schema; critical
     findings are also quarantined in etl.rejected with a JSON
     copy of the raw row.
 
@@ -132,16 +132,20 @@ BEGIN
             SELECT @rows_checked = COUNT(*)
             FROM #b;
 
+            -- The errors found by the screens (saved at the end by etl.usp_save_error_events)
+            DROP TABLE IF EXISTS #errors;
+            CREATE TABLE #errors (row_id INT IDENTITY(1,1), screen_name NVARCHAR(200), screen_type VARCHAR(20),
+                                  severity VARCHAR(20), exception_action VARCHAR(20), fields NVARCHAR(400),
+                                  record_id NVARCHAR(200), error_condition NVARCHAR(500));
+
             ---------------------------------------------------------
             -- RULE 0: source empty -> warning
             ---------------------------------------------------------
             IF @rows_checked = 0
             BEGIN
-                INSERT INTO etl.data_quality_log
-                    (batch_id, layer, object_name, check_name, record_id, description, severity)
-                VALUES
-                    (@batch_id, 'bronze', 'customer', 'Source empty', NULL,
-                     'No Bronze rows to check: nothing new, or only deletions', 'warning');
+                INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+                VALUES ('Source empty', 'business rule', 'warning', 'pass', '', NULL,
+                        'No Bronze rows to check: nothing new, or only deletions');
             END
 
             ---------------------------------------------------------
@@ -149,13 +153,10 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 1: CustomerID NULL';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'customer',
-                   'CustomerID NULL',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'CustomerID NULL', 'column', 'critical', 'set aside', 'CustomerID',
                    CAST(b.CustomerID AS NVARCHAR(200)),
-                   'CustomerID is NULL',
-                   'critical'
+                   'CustomerID is NULL'
             FROM #b b
             WHERE b.CustomerID IS NULL;
 
@@ -184,13 +185,10 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 2: Duplicate CustomerID';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'customer',
-                   'Duplicate CustomerID',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'Duplicate CustomerID', 'structure', 'critical', 'set aside', 'CustomerID',
                    CAST(b.CustomerID AS NVARCHAR(200)),
-                   'Duplicate CustomerID detected: ' + CAST(COUNT(*) AS VARCHAR(10)) + ' rows',
-                   'critical'
+                   'Duplicate CustomerID detected: ' + CAST(COUNT(*) AS VARCHAR(10)) + ' rows'
             FROM #b b
             GROUP BY b.CustomerID
             HAVING COUNT(*) > 1;
@@ -226,29 +224,22 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 3: TerritoryID NULL';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'customer',
-                   'TerritoryID NULL',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'TerritoryID NULL', 'column', 'error', 'pass', 'TerritoryID',
                    CAST(b.CustomerID AS NVARCHAR(200)),
-                   'TerritoryID is NULL',
-                   'error'
+                   'TerritoryID is NULL'
             FROM #b b
             WHERE b.TerritoryID IS NULL;
-
 
             ---------------------------------------------------------
             -- RULE 4: Territory not found in Silver -> error (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 4: Territory not found (error)';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'customer',
-                   'Territory not found',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'Territory not found', 'structure', 'error', 'pass', 'TerritoryID',
                    CAST(x.CustomerID AS NVARCHAR(200)),
-                   CONCAT('TerritoryID ', x.TerritoryID, ' does not exist in silver.erp_sales_territory - Silver uses -1'),
-                   'error'
+                   CONCAT('TerritoryID ', x.TerritoryID, ' does not exist in silver.erp_sales_territory - Silver uses -1')
             FROM #b AS x
             WHERE x.TerritoryID IS NOT NULL                 -- a NULL is not a broken relationship
               AND NOT EXISTS (SELECT 1
@@ -260,13 +251,10 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 5: Person not found (error)';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'customer',
-                   'Person not found',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'Person not found', 'structure', 'error', 'pass', 'PersonID',
                    CAST(x.CustomerID AS NVARCHAR(200)),
-                   CONCAT('PersonID ', x.PersonID, ' does not exist in silver.erp_person - Silver uses -1'),
-                   'error'
+                   CONCAT('PersonID ', x.PersonID, ' does not exist in silver.erp_person - Silver uses -1')
             FROM #b AS x
             WHERE x.PersonID IS NOT NULL                 -- a NULL is not a broken relationship
               AND NOT EXISTS (SELECT 1
@@ -278,46 +266,42 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 6: Store not found (error)';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'customer',
-                   'Store not found',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'Store not found', 'structure', 'error', 'pass', 'StoreID',
                    CAST(x.CustomerID AS NVARCHAR(200)),
-                   CONCAT('StoreID ', x.StoreID, ' does not exist in silver.erp_store - Silver uses -1'),
-                   'error'
+                   CONCAT('StoreID ', x.StoreID, ' does not exist in silver.erp_store - Silver uses -1')
             FROM #b AS x
             WHERE x.StoreID IS NOT NULL                 -- a NULL is not a broken relationship
               AND NOT EXISTS (SELECT 1
                               FROM silver.erp_store AS p
                               WHERE p.store_id = x.StoreID);
 
-
             ---------------------------------------------------------
             -- RULE 7: Neither person nor store -> error (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 7: Neither person nor store (error)';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'customer',
-                   'Customer without person or store',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'Customer without person or store', 'business rule', 'error', 'pass', 'PersonID,StoreID',
                    CAST(x.CustomerID AS NVARCHAR(200)),
-                   'PersonID and StoreID are both NULL: the customer is neither a person nor a store',
-                   'error'
+                   'PersonID and StoreID are both NULL: the customer is neither a person nor a store'
             FROM #b AS x
             WHERE x.PersonID IS NULL AND x.StoreID IS NULL;
+
+            -- Save the errors in the error event schema (same transaction as the screens)
+            SELECT @errors = COUNT(*) FROM #errors WHERE severity IN ('error', 'critical');
+
+            EXEC etl.usp_save_error_events
+                 @batch_id    = @batch_id,
+                 @layer       = 'bronze',
+                 @object_name = 'customer',
+                 @etl_module  = @proc_name;
 
         COMMIT TRANSACTION;
 
         ---------------------------------------------------------
         -- Summary
         ---------------------------------------------------------
-        SELECT @errors = COUNT(*)
-        FROM etl.data_quality_log
-        WHERE batch_id   = @batch_id
-          AND layer       = 'bronze'
-          AND object_name = 'customer'
-          AND severity IN ('error','critical');
 
         SELECT @rows_rejected = COUNT(*)
         FROM etl.rejected

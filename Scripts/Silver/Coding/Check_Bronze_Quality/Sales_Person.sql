@@ -43,7 +43,7 @@ SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline,
     before the Silver load of the same object. SSIS passes
     @batch_id and @max_reject_rate (default 20). Every
-    finding is logged in etl.data_quality_log; critical
+    finding is logged in the error event schema; critical
     findings are also quarantined in etl.rejected with a JSON
     copy of the raw row.
 
@@ -125,16 +125,20 @@ BEGIN
         SELECT @rows_checked = COUNT(*)
         FROM #b;
 
+        -- The errors found by the screens (saved at the end by etl.usp_save_error_events)
+        DROP TABLE IF EXISTS #errors;
+        CREATE TABLE #errors (row_id INT IDENTITY(1,1), screen_name NVARCHAR(200), screen_type VARCHAR(20),
+                              severity VARCHAR(20), exception_action VARCHAR(20), fields NVARCHAR(400),
+                              record_id NVARCHAR(200), error_condition NVARCHAR(500));
+
         ---------------------------------------------------------
         -- RULE 0: source empty -> warning
         ---------------------------------------------------------
         IF @rows_checked = 0
         BEGIN
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            VALUES
-                (@batch_id, 'bronze', 'sales_person', 'Source empty', NULL,
-                 'No Bronze rows to check: nothing new, or only deletions', 'warning');
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            VALUES ('Source empty', 'business rule', 'warning', 'pass', '', NULL,
+                    'No Bronze rows to check: nothing new, or only deletions');
         END
 
         ---------------------------------------------------------
@@ -142,13 +146,10 @@ BEGIN
         ---------------------------------------------------------
         PRINT '-- Rule 1: BusinessEntityID NULL';
 
-        INSERT INTO etl.data_quality_log
-            (batch_id, layer, object_name, check_name, record_id, description, severity)
-        SELECT @batch_id, 'bronze', 'sales_person',
-               'BusinessEntityID NULL',
+        INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+        SELECT 'BusinessEntityID NULL', 'column', 'critical', 'set aside', '',
                NULL,
-               'BusinessEntityID is NULL',
-               'critical'
+               'BusinessEntityID is NULL'
         FROM #b
         WHERE BusinessEntityID IS NULL;
 
@@ -178,13 +179,10 @@ BEGIN
         ---------------------------------------------------------
         PRINT '-- Rule 2: Duplicate BusinessEntityID';
 
-        INSERT INTO etl.data_quality_log
-            (batch_id, layer, object_name, check_name, record_id, description, severity)
-        SELECT @batch_id, 'bronze', 'sales_person',
-               'Duplicate BusinessEntityID',
+        INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+        SELECT 'Duplicate BusinessEntityID', 'structure', 'critical', 'set aside', 'BusinessEntityID',
                CAST(b.BusinessEntityID AS NVARCHAR(200)),
-               'Duplicate BusinessEntityID detected: ' + CAST(COUNT(*) AS VARCHAR(10)) + ' rows',
-               'critical'
+               'Duplicate BusinessEntityID detected: ' + CAST(COUNT(*) AS VARCHAR(10)) + ' rows'
         FROM #b b
         GROUP BY b.BusinessEntityID
         HAVING COUNT(*) > 1;
@@ -221,13 +219,10 @@ BEGIN
         ---------------------------------------------------------
         PRINT '-- Rule 3: TerritoryID NULL (warning)';
 
-        INSERT INTO etl.data_quality_log
-            (batch_id, layer, object_name, check_name, record_id, description, severity)
-        SELECT @batch_id, 'bronze', 'sales_person',
-               'TerritoryID NULL',
+        INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+        SELECT 'TerritoryID NULL', 'column', 'warning', 'pass', 'TerritoryID',
                CAST(b.BusinessEntityID AS NVARCHAR(200)),
-               'TerritoryID is NULL',
-               'warning'
+               'TerritoryID is NULL'
         FROM #b b
         WHERE b.TerritoryID IS NULL;
 
@@ -236,13 +231,10 @@ BEGIN
         ---------------------------------------------------------
         PRINT '-- Rule 4: CommissionPct NULL (warning)';
 
-        INSERT INTO etl.data_quality_log
-            (batch_id, layer, object_name, check_name, record_id, description, severity)
-        SELECT @batch_id, 'bronze', 'sales_person',
-               'CommissionPct NULL',
+        INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+        SELECT 'CommissionPct NULL', 'column', 'warning', 'pass', 'CommissionPct',
                CAST(b.BusinessEntityID AS NVARCHAR(200)),
-               'CommissionPct is NULL',
-               'warning'
+               'CommissionPct is NULL'
         FROM #b b
         WHERE b.CommissionPct IS NULL;
 
@@ -251,13 +243,10 @@ BEGIN
         ---------------------------------------------------------
         PRINT '-- Rule 5: SalesQuota NULL (warning)';
 
-        INSERT INTO etl.data_quality_log
-            (batch_id, layer, object_name, check_name, record_id, description, severity)
-        SELECT @batch_id, 'bronze', 'sales_person',
-               'SalesQuota NULL',
+        INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+        SELECT 'SalesQuota NULL', 'column', 'warning', 'pass', 'SalesQuota',
                CAST(b.BusinessEntityID AS NVARCHAR(200)),
-               'SalesQuota is NULL',
-               'warning'
+               'SalesQuota is NULL'
         FROM #b b
         WHERE b.SalesQuota IS NULL;
 
@@ -266,13 +255,10 @@ BEGIN
         ---------------------------------------------------------
         PRINT '-- Rule 6: Bonus NULL (warning)';
 
-        INSERT INTO etl.data_quality_log
-            (batch_id, layer, object_name, check_name, record_id, description, severity)
-        SELECT @batch_id, 'bronze', 'sales_person',
-               'Bonus NULL',
+        INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+        SELECT 'Bonus NULL', 'column', 'warning', 'pass', 'Bonus',
                CAST(b.BusinessEntityID AS NVARCHAR(200)),
-               'Bonus is NULL',
-               'warning'
+               'Bonus is NULL'
         FROM #b b
         WHERE b.Bonus IS NULL;
 
@@ -281,13 +267,10 @@ BEGIN
         ---------------------------------------------------------
         PRINT '-- Rule 7: SalesYTD NULL (warning)';
 
-        INSERT INTO etl.data_quality_log
-            (batch_id, layer, object_name, check_name, record_id, description, severity)
-        SELECT @batch_id, 'bronze', 'sales_person',
-               'SalesYTD NULL',
+        INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+        SELECT 'SalesYTD NULL', 'column', 'warning', 'pass', 'SalesYTD',
                CAST(b.BusinessEntityID AS NVARCHAR(200)),
-               'SalesYTD is NULL',
-               'warning'
+               'SalesYTD is NULL'
         FROM #b b
         WHERE b.SalesYTD IS NULL;
 
@@ -296,29 +279,22 @@ BEGIN
         ---------------------------------------------------------
         PRINT '-- Rule 8: SalesLastYear NULL (warning)';
 
-        INSERT INTO etl.data_quality_log
-            (batch_id, layer, object_name, check_name, record_id, description, severity)
-        SELECT @batch_id, 'bronze', 'sales_person',
-               'SalesLastYear NULL',
+        INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+        SELECT 'SalesLastYear NULL', 'column', 'warning', 'pass', 'SalesLastYear',
                CAST(b.BusinessEntityID AS NVARCHAR(200)),
-               'SalesLastYear is NULL',
-               'warning'
+               'SalesLastYear is NULL'
         FROM #b b
         WHERE b.SalesLastYear IS NULL;
-
 
         ---------------------------------------------------------
         -- RULE 9: Employee not found in Silver -> error (row passes)
         ---------------------------------------------------------
         PRINT '-- Rule 9: Employee not found (error)';
 
-        INSERT INTO etl.data_quality_log
-            (batch_id, layer, object_name, check_name, record_id, description, severity)
-        SELECT @batch_id, 'bronze', 'sales_person',
-               'Employee not found',
+        INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+        SELECT 'Employee not found', 'structure', 'error', 'pass', 'BusinessEntityID',
                CAST(x.BusinessEntityID AS NVARCHAR(200)),
-               CONCAT('BusinessEntityID ', x.BusinessEntityID, ' does not exist in silver.erp_employee - Silver uses -1'),
-               'error'
+               CONCAT('BusinessEntityID ', x.BusinessEntityID, ' does not exist in silver.erp_employee - Silver uses -1')
         FROM #b AS x
         WHERE x.BusinessEntityID IS NOT NULL                 -- a NULL is not a broken relationship
           AND NOT EXISTS (SELECT 1
@@ -330,30 +306,30 @@ BEGIN
         ---------------------------------------------------------
         PRINT '-- Rule 10: Territory not found (error)';
 
-        INSERT INTO etl.data_quality_log
-            (batch_id, layer, object_name, check_name, record_id, description, severity)
-        SELECT @batch_id, 'bronze', 'sales_person',
-               'Territory not found',
+        INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+        SELECT 'Territory not found', 'structure', 'error', 'pass', 'TerritoryID',
                CAST(x.BusinessEntityID AS NVARCHAR(200)),
-               CONCAT('TerritoryID ', x.TerritoryID, ' does not exist in silver.erp_sales_territory - Silver uses -1'),
-               'error'
+               CONCAT('TerritoryID ', x.TerritoryID, ' does not exist in silver.erp_sales_territory - Silver uses -1')
         FROM #b AS x
         WHERE x.TerritoryID IS NOT NULL                 -- a NULL is not a broken relationship
           AND NOT EXISTS (SELECT 1
                           FROM silver.erp_sales_territory AS p
                           WHERE p.territory_id = x.TerritoryID);
 
+            -- Save the errors in the error event schema (same transaction as the screens)
+            SELECT @errors = COUNT(*) FROM #errors WHERE severity IN ('error', 'critical');
+
+            EXEC etl.usp_save_error_events
+                 @batch_id    = @batch_id,
+                 @layer       = 'bronze',
+                 @object_name = 'sales_person',
+                 @etl_module  = @proc_name;
+
         COMMIT TRANSACTION;
 
         ---------------------------------------------------------
         -- Summary
         ---------------------------------------------------------
-        SELECT @errors = COUNT(*)
-        FROM etl.data_quality_log
-        WHERE batch_id   = @batch_id
-          AND layer       = 'bronze'
-          AND object_name = 'sales_person'
-          AND severity IN ('error','critical');
 
         SELECT @rows_rejected = COUNT(*)
         FROM etl.rejected

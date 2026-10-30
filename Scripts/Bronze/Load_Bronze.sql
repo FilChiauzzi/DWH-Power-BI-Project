@@ -15,7 +15,7 @@ Purpose:
         the Bronze table untouched. After the copy the rows
         copied are compared with the rows counted in the
         source: a difference is logged as a warning in
-        etl.data_quality_log (the source may change during the
+        the error event schema (the source may change during the
         copy). Rows are numbered by the primary key of the
         source, so dwh_source_row_num is stable between runs.
     load_type incremental
@@ -44,7 +44,7 @@ SSIS Usage:
 Warning:
     A FULL load truncates the Bronze table. Run the ETL
     framework scripts first (etl.batch, etl.rejected,
-    etl.data_quality_log, etl.config, etl.load_audit, the
+    the error event schema, etl.config, etl.load_audit, the
     audit procedures and etl.usp_load_bronze_cdc).
 */
 
@@ -241,12 +241,18 @@ BEGIN
             -----------------------------------------------------
             IF @rows_inserted <> @src_rows
             BEGIN
-                INSERT INTO etl.data_quality_log
-                    (batch_id, layer, object_name, check_name, record_id, description, severity)
-                VALUES
-                    (@batch_id, 'bronze', @object_name, 'Row count reconciliation', NULL,
-                     CONCAT('Source counted ', @src_rows, ' rows before the copy, ',
-                            @rows_inserted, ' rows copied into Bronze'), 'warning');
+                DROP TABLE IF EXISTS #errors;
+                CREATE TABLE #errors (row_id INT IDENTITY(1,1), screen_name NVARCHAR(200), screen_type VARCHAR(20),
+                                      severity VARCHAR(20), exception_action VARCHAR(20), fields NVARCHAR(400),
+                                      record_id NVARCHAR(200), error_condition NVARCHAR(500));
+
+                INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+                VALUES ('Row count reconciliation', 'business rule', 'warning', 'pass', '', NULL,
+                        CONCAT('Source counted ', @src_rows, ' rows before the copy, ',
+                            @rows_inserted, ' rows copied into Bronze'));
+
+                EXEC etl.usp_save_error_events @batch_id = @batch_id, @layer = 'bronze',
+                     @object_name = @object_name, @etl_module = '[etl].[usp_load_bronze]';
 
                 PRINT CONCAT('>> WARNING row count: source ', @src_rows, ', copied ', @rows_inserted);
             END

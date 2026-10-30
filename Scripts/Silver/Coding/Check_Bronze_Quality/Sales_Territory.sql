@@ -43,7 +43,7 @@ SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline,
     before the Silver load of the same object. SSIS passes
     @batch_id and @max_reject_rate (default 20). Every
-    finding is logged in etl.data_quality_log; critical
+    finding is logged in the error event schema; critical
     findings are also quarantined in etl.rejected with a JSON
     copy of the raw row.
 
@@ -129,16 +129,20 @@ BEGIN
             SELECT @rows_checked = COUNT(*)
             FROM #b;
 
+            -- The errors found by the screens (saved at the end by etl.usp_save_error_events)
+            DROP TABLE IF EXISTS #errors;
+            CREATE TABLE #errors (row_id INT IDENTITY(1,1), screen_name NVARCHAR(200), screen_type VARCHAR(20),
+                                  severity VARCHAR(20), exception_action VARCHAR(20), fields NVARCHAR(400),
+                                  record_id NVARCHAR(200), error_condition NVARCHAR(500));
+
             ---------------------------------------------------------
             -- RULE 0: source empty -> warning
             ---------------------------------------------------------
             IF @rows_checked = 0
             BEGIN
-                INSERT INTO etl.data_quality_log
-                    (batch_id, layer, object_name, check_name, record_id, description, severity)
-                VALUES
-                    (@batch_id, 'bronze', 'sales_territory', 'Source empty', NULL,
-                     'No Bronze rows to check: nothing new, or only deletions', 'warning');
+                INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+                VALUES ('Source empty', 'business rule', 'warning', 'pass', '', NULL,
+                        'No Bronze rows to check: nothing new, or only deletions');
             END
 
             ---------------------------------------------------------
@@ -146,13 +150,10 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 1: TerritoryID NULL';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'sales_territory',
-                   'TerritoryID NULL',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'TerritoryID NULL', 'column', 'critical', 'set aside', 'TerritoryID',
                    CAST(b.TerritoryID AS NVARCHAR(200)),
-                   'TerritoryID is NULL',
-                   'critical'
+                   'TerritoryID is NULL'
             FROM #b b
             WHERE b.TerritoryID IS NULL;
 
@@ -180,13 +181,10 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 2: Duplicate TerritoryID';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'sales_territory',
-                   'Duplicate TerritoryID',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'Duplicate TerritoryID', 'structure', 'critical', 'set aside', 'TerritoryID',
                    CAST(b.TerritoryID AS NVARCHAR(200)),
-                   'Duplicate TerritoryID detected: ' + CAST(COUNT(*) AS VARCHAR(10)) + ' rows',
-                   'critical'
+                   'Duplicate TerritoryID detected: ' + CAST(COUNT(*) AS VARCHAR(10)) + ' rows'
             FROM #b b
             GROUP BY b.TerritoryID
             HAVING COUNT(*) > 1;
@@ -221,13 +219,10 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 3: Name NULL or empty (warning)';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'sales_territory',
-                   'Name NULL or empty',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'Name NULL or empty', 'column', 'warning', 'pass', 'Name',
                    CAST(b.TerritoryID AS NVARCHAR(200)),
-                   'Name is NULL or empty - Silver substitutes ''Unknown''',
-                   'warning'
+                   'Name is NULL or empty - Silver substitutes ''Unknown'''
             FROM #b b
             WHERE b.Name IS NULL
                OR TRIM(b.Name) = '';
@@ -237,13 +232,10 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 4: Group NULL or empty';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'sales_territory',
-                   'Group NULL or empty',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'Group NULL or empty', 'column', 'error', 'pass', 'Group',
                    CAST(b.TerritoryID AS NVARCHAR(200)),
-                   'Group is NULL or empty',
-                   'error'
+                   'Group is NULL or empty'
             FROM #b b
             WHERE b.[Group] IS NULL
                OR TRIM(b.[Group]) = '';
@@ -253,47 +245,43 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 5: CountryRegionCode NULL or empty';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'sales_territory',
-                   'CountryRegionCode NULL or empty',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'CountryRegionCode NULL or empty', 'column', 'error', 'pass', 'CountryRegionCode',
                    CAST(b.TerritoryID AS NVARCHAR(200)),
-                   'CountryRegionCode is NULL or empty',
-                   'error'
+                   'CountryRegionCode is NULL or empty'
             FROM #b b
             WHERE b.CountryRegionCode IS NULL
                OR TRIM(b.CountryRegionCode) = '';
-
 
             ---------------------------------------------------------
             -- RULE 6: Country not found in Silver -> error (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 6: Country not found (error)';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'sales_territory',
-                   'Country not found',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'Country not found', 'structure', 'error', 'pass', 'CountryRegionCode',
                    CAST(x.TerritoryID AS NVARCHAR(200)),
-                   CONCAT('CountryRegionCode ', x.CountryRegionCode, ' does not exist in silver.erp_country_region - Silver uses -1'),
-                   'error'
+                   CONCAT('CountryRegionCode ', x.CountryRegionCode, ' does not exist in silver.erp_country_region - Silver uses -1')
             FROM #b AS x
             WHERE x.CountryRegionCode IS NOT NULL                 -- a NULL is not a broken relationship
               AND NOT EXISTS (SELECT 1
                               FROM silver.erp_country_region AS p
                               WHERE p.country_code = x.CountryRegionCode);
 
+            -- Save the errors in the error event schema (same transaction as the screens)
+            SELECT @errors = COUNT(*) FROM #errors WHERE severity IN ('error', 'critical');
+
+            EXEC etl.usp_save_error_events
+                 @batch_id    = @batch_id,
+                 @layer       = 'bronze',
+                 @object_name = 'sales_territory',
+                 @etl_module  = @proc_name;
+
         COMMIT TRANSACTION;
 
         ---------------------------------------------------------
         -- Summary
         ---------------------------------------------------------
-        SELECT @errors = COUNT(*)
-        FROM etl.data_quality_log
-        WHERE batch_id   = @batch_id
-          AND layer       = 'bronze'
-          AND object_name = 'sales_territory'
-          AND severity IN ('error','critical');
 
         SELECT @rows_rejected = COUNT(*)
         FROM etl.rejected

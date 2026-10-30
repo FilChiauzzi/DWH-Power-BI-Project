@@ -42,7 +42,7 @@ SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline,
     before the Silver load of the same object. SSIS passes
     @batch_id and @max_reject_rate (default 20). Every
-    finding is logged in etl.data_quality_log; critical
+    finding is logged in the error event schema; critical
     findings are also quarantined in etl.rejected with a JSON
     copy of the raw row.
 
@@ -128,16 +128,20 @@ BEGIN
             SELECT @rows_checked = COUNT(*)
             FROM #b;
 
+            -- The errors found by the screens (saved at the end by etl.usp_save_error_events)
+            DROP TABLE IF EXISTS #errors;
+            CREATE TABLE #errors (row_id INT IDENTITY(1,1), screen_name NVARCHAR(200), screen_type VARCHAR(20),
+                                  severity VARCHAR(20), exception_action VARCHAR(20), fields NVARCHAR(400),
+                                  record_id NVARCHAR(200), error_condition NVARCHAR(500));
+
             ---------------------------------------------------------
             -- RULE 0: source empty -> warning
             ---------------------------------------------------------
             IF @rows_checked = 0
             BEGIN
-                INSERT INTO etl.data_quality_log
-                    (batch_id, layer, object_name, check_name, record_id, description, severity)
-                VALUES
-                    (@batch_id, 'bronze', 'subcategory', 'Source empty', NULL,
-                     'No Bronze rows to check: nothing new, or only deletions', 'warning');
+                INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+                VALUES ('Source empty', 'business rule', 'warning', 'pass', '', NULL,
+                        'No Bronze rows to check: nothing new, or only deletions');
             END
 
             ---------------------------------------------------------
@@ -145,13 +149,10 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 1: ProductSubcategoryID NULL';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'subcategory',
-                   'SubCategoryID NULL',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'SubCategoryID NULL', 'column', 'critical', 'set aside', 'ProductSubcategoryID',
                    CAST(b.ProductSubcategoryID AS NVARCHAR(200)),
-                   'ProductSubcategoryID is NULL',
-                   'critical'
+                   'ProductSubcategoryID is NULL'
             FROM #b AS b
             WHERE b.ProductSubcategoryID IS NULL;
 
@@ -177,13 +178,10 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 2: ProductCategoryID NULL';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'subcategory',
-                   'CategoryID NULL',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'CategoryID NULL', 'column', 'error', 'pass', 'ProductCategoryID',
                    CAST(b.ProductSubcategoryID AS NVARCHAR(200)),
-                   'ProductCategoryID is NULL',
-                   'error'
+                   'ProductCategoryID is NULL'
             FROM #b AS b
             WHERE b.ProductCategoryID IS NULL;
 
@@ -192,13 +190,10 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 3: Duplicate ProductSubcategoryID';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'subcategory',
-                   'Duplicate SubCategoryID',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'Duplicate SubCategoryID', 'structure', 'critical', 'set aside', 'ProductSubcategoryID',
                    CAST(b.ProductSubcategoryID AS NVARCHAR(200)),
-                   'Duplicate ProductSubcategoryID detected: ' + CAST(COUNT(*) AS VARCHAR(10)) + ' rows',
-                   'critical'
+                   'Duplicate ProductSubcategoryID detected: ' + CAST(COUNT(*) AS VARCHAR(10)) + ' rows'
             FROM #b AS b
             GROUP BY b.ProductSubcategoryID
             HAVING COUNT(*) > 1;
@@ -231,47 +226,43 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 4: Name NULL or empty (warning)';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'subcategory',
-                   'Name NULL or empty',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'Name NULL or empty', 'column', 'warning', 'pass', 'Name',
                    CAST(b.ProductSubcategoryID AS NVARCHAR(200)),
-                   'Name is NULL or empty - Silver substitutes ''Unknown''',
-                   'warning'
+                   'Name is NULL or empty - Silver substitutes ''Unknown'''
             FROM #b AS b
             WHERE b.[Name] IS NULL
                OR LTRIM(RTRIM(b.[Name])) = '';
-
 
             ---------------------------------------------------------
             -- RULE 5: Category not found in Silver -> error (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 5: Category not found (error)';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'subcategory',
-                   'Category not found',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'Category not found', 'structure', 'error', 'pass', 'ProductCategoryID',
                    CAST(x.ProductSubcategoryID AS NVARCHAR(200)),
-                   CONCAT('ProductCategoryID ', x.ProductCategoryID, ' does not exist in silver.erp_category - Silver uses -1'),
-                   'error'
+                   CONCAT('ProductCategoryID ', x.ProductCategoryID, ' does not exist in silver.erp_category - Silver uses -1')
             FROM #b AS x
             WHERE x.ProductCategoryID IS NOT NULL                 -- a NULL is not a broken relationship
               AND NOT EXISTS (SELECT 1
                               FROM silver.erp_category AS p
                               WHERE p.category_id = x.ProductCategoryID);
 
+            -- Save the errors in the error event schema (same transaction as the screens)
+            SELECT @errors = COUNT(*) FROM #errors WHERE severity IN ('error', 'critical');
+
+            EXEC etl.usp_save_error_events
+                 @batch_id    = @batch_id,
+                 @layer       = 'bronze',
+                 @object_name = 'subcategory',
+                 @etl_module  = @proc_name;
+
         COMMIT TRANSACTION;
 
         ---------------------------------------------------------
         -- Summary
         ---------------------------------------------------------
-        SELECT @errors = COUNT(*)
-        FROM etl.data_quality_log
-        WHERE batch_id   = @batch_id
-          AND layer       = 'bronze'
-          AND object_name = 'subcategory'
-          AND severity IN ('error','critical');
 
         SELECT @rows_rejected = COUNT(*)
         FROM etl.rejected

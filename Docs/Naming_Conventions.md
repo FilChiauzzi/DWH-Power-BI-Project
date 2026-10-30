@@ -132,125 +132,16 @@ Rules:
 - Every SCD1 table has `row_hash`, `dwh_create_date`, `dwh_load_date`, `dwh_batch_id`. SCD2 tables add `dwh_start_date`, `dwh_end_date`, `is_active`.
 
 ### **Quality Columns**
-Used in `etl.data_quality_log` (now a view on the error event schema, see [Data Quality](Data_Quality.md)) and `etl.rejected`.
+Used by the quality screens (error event schema, see [Data Quality](Data_Quality.md)) and in `etl.rejected`.
 
-`etl.data_quality_log` (every finding, warnings included):
-- `dq_log_key`  
-- `batch_id`  
-- `layer`  
-- `object_name`  
-- `check_name`  
+Every screen writes its errors into `#errors`, then calls `etl.usp_save_error_events`:
+- `screen_name`  
+- `screen_type` (`column`, `structure`, `business rule`)  
+- `severity`  
+- `exception_action` (`set aside`, `pass`, `halt`)  
+- `fields` (the fields tested, comma separated)  
 - `record_id`  
-- `description`  
-- `severity`  
-- `detected_at`  
-
-`etl.rejected` (the quarantine, one row per blocking problem):
-- `rejected_key`  
-- `batch_id`  
-- `layer`  
-- `object_name`  
-- `business_key`  
-- `rule_code`  
-- `rule_description`  
-- `severity`  
-- `raw_row` (the original row in JSON)  
-- `rejected_at`  
-- `replayed_at`  
-- `replayed_batch_id`  
-
----
-
-## **Stored Procedure Naming Conventions**
-
-Stored procedures live in schema `etl` and follow the pattern:
-
-### **`usp_<action>_<layer>_<entity>`**
-
-Where:
-- `usp` = user stored procedure  
-- `<action>` = load, check  
-- `<layer>` = bronze, silver, gold  
-- `<entity>` = the entity name used in the table name (without `erp_`)  
-
-| Procedure                                      | What it does                                          | How many            |
-|------------------------------------------------|-------------------------------------------------------|---------------------|
-| `usp_load_bronze`                              | Loads any Bronze table, driven by `etl.config`        | One for all objects |
-| `usp_check_bronze_quality_load_<entity>`       | Quality check of a Bronze table, before the Silver load | One per entity    |
-| `usp_load_silver_<entity>`                     | Loads a Silver table (SCD1 or SCD2)                   | One per entity      |
-| `usp_load_gold_<entity>`                       | Loads a Gold table                                    | One per fact        |
-
-The procedures of the ETL framework do not belong to a layer and use the pattern **`usp_<action>_<object>`**:
-
-| Procedure            | What it does                                                        | Called by                      |
-|----------------------|---------------------------------------------------------------------|--------------------------------|
-| `usp_start_batch`    | Opens the run in `etl.batch`, closes runs left open (`aborted`)    | SSIS, first task               |
-| `usp_audit_start`    | Opens one step in `etl.load_audit` (`running`)                     | every load and quality check   |
-| `usp_audit_end`      | Closes the step: status, counts, watermark, error                  | every load and quality check   |
-| `usp_end_batch`      | Closes the run with the real outcome, read from `etl.load_audit`   | SSIS, last task and OnError    |
-
-Examples:
-- `usp_load_bronze`  
-- `usp_check_bronze_quality_load_category`  
-- `usp_load_silver_category`  
-- `usp_load_gold_fact_sales_order`  
-
-Rules:
-- Quality checks are **separate** procedures from the loads: Bronze loading never rejects rows.
-- Silver SCD1 procedures reconcile with UPDATE (changed `row_hash`) + INSERT (new business key). SCD2 procedures close the active version and insert a new one.
-- FULL load = `TRUNCATE` + reload in one transaction, and it stops when the source is empty.
-- Gold SPs shape the semantic model.
-- Every procedure starts with `SET NOCOUNT ON` and `SET XACT_ABORT ON`, uses `TRY/CATCH`, rolls back and **re-throws**, so that SSIS sees the failure. The only exception is `usp_audit_end`: it is called inside the CATCH blocks, so it never throws (a new error would hide the original one).
-- Every load and quality check is **logged** in `etl.load_audit`: `usp_audit_start` right after `BEGIN TRY` (outside any transaction), `usp_audit_end` before every exit (`RETURN` and end of the TRY) and, in the CATCH, **after** the rollback.
-- One script file defines one procedure and starts with the standard header (see [Script Files and Comments](#script-files-and-comments)).
-
----
-
-## **Sequence Naming Conventions**
-
-Sequences generate surrogate keys in Silver.
-
-Pattern:
-### **`dwh.seq_<layer>_<entity>`**
-
-Examples:
-- `dwh.seq_silver_category`
-- `dwh.seq_silver_product`
-- `dwh.seq_silver_sales_person`
-- `dwh.seq_silver_person_address`
-- `dwh.seq_silver_ship_method`
-
-Rules:
-- Sequences belong to schema `dwh`, start with 1 and increase by 1.
-- One sequence per Silver dimension. Silver facts have none.
-- FULL loads restart the sequence: `ALTER SEQUENCE ... RESTART WITH 1`.
-- Incremental loads **never** reset sequences.
-- After a FULL load of a dimension, the tables that store its surrogate keys must be reloaded.
-
----
-
-## **Quality Codes**
-
-Used in the Bronze DQ stored procedures.
-
-Standard codes (column `etl.rejected.rule_code`):
-- **`NULL_BK`** → Business key is NULL  
-- **`DUP_BK`** → Duplicate business key  
-- **`NULL_FK`** → Mandatory foreign key is NULL  
-- **`NULL_TERRITORY`** → Territory is NULL (customer)  
-- **`NULL_GROUP`** → Group is NULL or empty (sales territory)  
-- **`NULL_COUNTRY`** → Country region code is NULL or empty (sales territory)  
-- **`NULL_LINE`** → Order line key is NULL (sales order detail)  
-- **`DUP_LINE`** → Duplicate order line, the grain of the fact (sales order detail)  
-- **`QTY_INVALID`** → Quantity is not positive (sales order detail)  
-- **`NEG_PRICE`** → Price or discount is negative (sales order detail)  
-- **`LINE_MISMATCH`** → Line total is not consistent with price, discount and quantity (sales order detail)  
-
-Rules:
-- Codes must be uppercase.
-- Codes must be stable across entities: use the generic code whenever one exists.
-- Codes must be descriptive but short, in the form `<NULL|DUP>_<what>`.
-- A rule code is written only when the row is **quarantined** in `etl.rejected`, that is for `critical` screens only.
+- `error_condition`  
 
 Severity levels (`severity`):
 
@@ -260,7 +151,7 @@ Severity levels (`severity`):
 | `error`    | The row is identified but a value is wrong                           | Error event schema only (the row passes; a missing parent becomes `-1`) |
 | `warning`  | The row is accepted, Silver repairs it (for example with `Unknown`)  | Error event schema only (the row passes)   |
 
-Naming of `check_name` in `etl.data_quality_log`:
+Naming of `screen_name`:
 - `<Column> NULL`  
 - `<Column> NULL or empty`  
 - `Duplicate <Column>`  
@@ -297,17 +188,17 @@ Rules:
 | `etl.load_audit`       | One row per step of a run (one object, one layer, one step): status, duration, row counts, watermark, error |
 | `etl.vw_last_successful_load` | Last successful step of every object, layer and step                    |
 | `etl.rejected`         | The quarantine of blocking rows                                                |
-| `etl.dim_screen`       | Screen Dimension: one row per quality screen (type, module, definition, severity, exception action) |
-| `etl.dim_table`, `etl.dim_field`, `etl.bridge_screen_field` | The tables and fields checked by the screens |
+| `etl.dim_screen`       | Screen Dimension: one row per quality screen, filled automatically by the screens |
+| `etl.dim_table`, `etl.dim_field` | The tables and fields checked by the screens, filled automatically   |
 | `etl.fact_error_event` | Error Event Fact: every error thrown by a screen (append-only)                 |
 | `etl.fact_error_event_detail` | Error Event Detail Fact: every field of a record involved in an error   |
-| `etl.data_quality_log` | **View** on the error event facts, with the columns of the original log; an INSTEAD OF trigger accepts the inserts of the quality checks |
+| `etl.usp_save_error_events` | Saves the content of `#errors` into the error event schema                |
 | `etl.vw_error_event_daily` | Error events per day, object, screen type and severity                     |
 
 `etl.batch` and `etl.load_audit` answer *"did the **process** work?"* (folder `Scripts/ETL/Audit`). The error event schema and `etl.rejected` answer *"are the **data** good?"* (folder `Scripts/ETL/Error_Event`, described in [Data Quality](Data_Quality.md)).
 
 Rules for `etl.config`:
-- `object_name` is the entity in lowercase snake_case, **without** `erp_` (`sales_order_header`). The same value is used in `etl.rejected.object_name` and `etl.data_quality_log.object_name`.
+- `object_name` is the entity in lowercase snake_case, **without** `erp_` (`sales_order_header`). The same value is used in `etl.rejected.object_name` and `etl.dim_screen.object_name`.
 - `object_type` is the source system (`erp`).
 - `load_order` goes in steps of 10 (10, 20, 30...) and follows the dependencies: parents before children.
 - `load_type` is `full` or `incremental`.

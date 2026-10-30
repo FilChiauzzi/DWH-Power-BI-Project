@@ -9,7 +9,7 @@ Purpose:
     that started it, optional notes and the final status
     (running, succeeded, failed, aborted). The identity
     batch_id groups all the loads of a run and links them to
-    etl.load_audit, etl.data_quality_log and etl.rejected.
+    etl.load_audit, the error event schema and etl.rejected.
 
 SSIS Usage:
     Not executed by SSIS. The run is opened by

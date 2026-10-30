@@ -47,7 +47,7 @@ SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline,
     before the Silver load of the same object. SSIS passes
     @batch_id and @max_reject_rate (default 20). Every
-    finding is logged in etl.data_quality_log; critical
+    finding is logged in the error event schema; critical
     findings are also quarantined in etl.rejected with a JSON
     copy of the raw row.
 
@@ -129,16 +129,20 @@ BEGIN
             SELECT @rows_checked = COUNT(*)
             FROM #b;
 
+            -- The errors found by the screens (saved at the end by etl.usp_save_error_events)
+            DROP TABLE IF EXISTS #errors;
+            CREATE TABLE #errors (row_id INT IDENTITY(1,1), screen_name NVARCHAR(200), screen_type VARCHAR(20),
+                                  severity VARCHAR(20), exception_action VARCHAR(20), fields NVARCHAR(400),
+                                  record_id NVARCHAR(200), error_condition NVARCHAR(500));
+
             ---------------------------------------------------------
             -- RULE 0: source empty -> warning
             ---------------------------------------------------------
             IF @rows_checked = 0
             BEGIN
-                INSERT INTO etl.data_quality_log
-                    (batch_id, layer, object_name, check_name, record_id, description, severity)
-                VALUES
-                    (@batch_id, 'bronze', 'sales_order_header', 'Source empty', NULL,
-                     'No Bronze rows to check: nothing new, or only deletions', 'warning');
+                INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+                VALUES ('Source empty', 'business rule', 'warning', 'pass', '', NULL,
+                        'No Bronze rows to check: nothing new, or only deletions');
             END
 
             ---------------------------------------------------------
@@ -146,13 +150,10 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 1: SalesOrderID NULL';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'sales_order_header',
-                   'SalesOrderID NULL',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'SalesOrderID NULL', 'column', 'critical', 'set aside', 'SalesOrderID',
                    CAST(b.SalesOrderID AS NVARCHAR(200)),
-                   'SalesOrderID is NULL',
-                   'critical'
+                   'SalesOrderID is NULL'
             FROM #b AS b
             WHERE b.SalesOrderID IS NULL;
 
@@ -204,13 +205,10 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 2: Duplicate SalesOrderID';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'sales_order_header',
-                   'Duplicate SalesOrderID',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'Duplicate SalesOrderID', 'structure', 'critical', 'set aside', 'SalesOrderID',
                    CAST(b.SalesOrderID AS NVARCHAR(200)),
-                   'Duplicate SalesOrderID detected: ' + CAST(COUNT(*) AS VARCHAR(10)) + ' rows',
-                   'critical'
+                   'Duplicate SalesOrderID detected: ' + CAST(COUNT(*) AS VARCHAR(10)) + ' rows'
             FROM #b AS b
             GROUP BY b.SalesOrderID
             HAVING COUNT(*) > 1;
@@ -269,13 +267,10 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 3: OrderDate NULL';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'sales_order_header',
-                   'OrderDate NULL',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'OrderDate NULL', 'column', 'error', 'pass', 'OrderDate',
                    CAST(b.SalesOrderID AS NVARCHAR(200)),
-                   'OrderDate is NULL',
-                   'error'
+                   'OrderDate is NULL'
             FROM #b AS b
             WHERE b.OrderDate IS NULL;
 
@@ -284,13 +279,10 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 4: DueDate < OrderDate';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'sales_order_header',
-                   'DueDate < OrderDate',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'DueDate < OrderDate', 'business rule', 'error', 'pass', 'DueDate,OrderDate',
                    CAST(b.SalesOrderID AS NVARCHAR(200)),
-                   'DueDate is earlier than OrderDate',
-                   'error'
+                   'DueDate is earlier than OrderDate'
             FROM #b AS b
             WHERE b.DueDate < b.OrderDate;
 
@@ -299,13 +291,10 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 5: ShipDate < OrderDate';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'sales_order_header',
-                   'ShipDate < OrderDate',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'ShipDate < OrderDate', 'business rule', 'error', 'pass', 'ShipDate,OrderDate',
                    CAST(b.SalesOrderID AS NVARCHAR(200)),
-                   'ShipDate is earlier than OrderDate',
-                   'error'
+                   'ShipDate is earlier than OrderDate'
             FROM #b AS b
             WHERE b.ShipDate IS NOT NULL
               AND b.ShipDate < b.OrderDate;
@@ -315,13 +304,10 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 6: ModifiedDate < OrderDate';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'sales_order_header',
-                   'ModifiedDate < OrderDate',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'ModifiedDate < OrderDate', 'business rule', 'error', 'pass', 'ModifiedDate,OrderDate',
                    CAST(b.SalesOrderID AS NVARCHAR(200)),
-                   'ModifiedDate is earlier than OrderDate',
-                   'error'
+                   'ModifiedDate is earlier than OrderDate'
             FROM #b AS b
             WHERE b.ModifiedDate < b.OrderDate;
 
@@ -330,13 +316,10 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 7: Numeric fields < 0';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'sales_order_header',
-                   'Negative numeric value',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'Negative numeric value', 'column', 'error', 'pass', 'SubTotal,TaxAmt,Freight',
                    CAST(b.SalesOrderID AS NVARCHAR(200)),
-                   'One or more numeric fields are negative',
-                   'error'
+                   'One or more numeric fields are negative'
             FROM #b AS b
             WHERE b.SubTotal < 0
                OR b.TaxAmt < 0
@@ -347,13 +330,10 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 8: TotalDue mismatch';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'sales_order_header',
-                   'TotalDue mismatch',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'TotalDue mismatch', 'business rule', 'error', 'pass', 'TotalDue,SubTotal,TaxAmt,Freight',
                    CAST(b.SalesOrderID AS NVARCHAR(200)),
-                   'TotalDue <> SubTotal + TaxAmt + Freight',
-                   'error'
+                   'TotalDue <> SubTotal + TaxAmt + Freight'
             FROM #b AS b
             WHERE b.TotalDue <> (b.SubTotal + b.TaxAmt + b.Freight);
 
@@ -362,13 +342,10 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 9: CustomerID NULL';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'sales_order_header',
-                   'CustomerID NULL',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'CustomerID NULL', 'column', 'error', 'pass', 'CustomerID',
                    CAST(b.SalesOrderID AS NVARCHAR(200)),
-                   'CustomerID is NULL',
-                   'error'
+                   'CustomerID is NULL'
             FROM #b AS b
             WHERE b.CustomerID IS NULL;
 
@@ -377,29 +354,22 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 10: ShipMethodID NULL';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'sales_order_header',
-                   'ShipMethodID NULL',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'ShipMethodID NULL', 'column', 'error', 'pass', 'ShipMethodID',
                    CAST(b.SalesOrderID AS NVARCHAR(200)),
-                   'ShipMethodID is NULL',
-                   'error'
+                   'ShipMethodID is NULL'
             FROM #b AS b
             WHERE b.ShipMethodID IS NULL;
-
 
             ---------------------------------------------------------
             -- RULE 11: Customer not found in Silver -> error (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 11: Customer not found (error)';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'sales_order_header',
-                   'Customer not found',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'Customer not found', 'structure', 'error', 'pass', 'CustomerID',
                    CAST(x.SalesOrderID AS NVARCHAR(200)),
-                   CONCAT('CustomerID ', x.CustomerID, ' does not exist in silver.erp_customer - Silver uses -1'),
-                   'error'
+                   CONCAT('CustomerID ', x.CustomerID, ' does not exist in silver.erp_customer - Silver uses -1')
             FROM #b AS x
             WHERE x.CustomerID IS NOT NULL                 -- a NULL is not a broken relationship
               AND NOT EXISTS (SELECT 1
@@ -411,13 +381,10 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 12: Sales person not found (error)';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'sales_order_header',
-                   'Sales person not found',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'Sales person not found', 'structure', 'error', 'pass', 'SalesPersonID',
                    CAST(x.SalesOrderID AS NVARCHAR(200)),
-                   CONCAT('SalesPersonID ', x.SalesPersonID, ' does not exist in silver.erp_sales_person - Silver uses -1'),
-                   'error'
+                   CONCAT('SalesPersonID ', x.SalesPersonID, ' does not exist in silver.erp_sales_person - Silver uses -1')
             FROM #b AS x
             WHERE x.SalesPersonID IS NOT NULL                 -- a NULL is not a broken relationship
               AND NOT EXISTS (SELECT 1
@@ -429,13 +396,10 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 13: Territory not found (error)';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'sales_order_header',
-                   'Territory not found',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'Territory not found', 'structure', 'error', 'pass', 'TerritoryID',
                    CAST(x.SalesOrderID AS NVARCHAR(200)),
-                   CONCAT('TerritoryID ', x.TerritoryID, ' does not exist in silver.erp_sales_territory - Silver uses -1'),
-                   'error'
+                   CONCAT('TerritoryID ', x.TerritoryID, ' does not exist in silver.erp_sales_territory - Silver uses -1')
             FROM #b AS x
             WHERE x.TerritoryID IS NOT NULL                 -- a NULL is not a broken relationship
               AND NOT EXISTS (SELECT 1
@@ -447,32 +411,25 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 14: Ship method not found (error)';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'sales_order_header',
-                   'Ship method not found',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'Ship method not found', 'structure', 'error', 'pass', 'ShipMethodID',
                    CAST(x.SalesOrderID AS NVARCHAR(200)),
-                   CONCAT('ShipMethodID ', x.ShipMethodID, ' does not exist in silver.erp_ship_method - Silver uses -1'),
-                   'error'
+                   CONCAT('ShipMethodID ', x.ShipMethodID, ' does not exist in silver.erp_ship_method - Silver uses -1')
             FROM #b AS x
             WHERE x.ShipMethodID IS NOT NULL                 -- a NULL is not a broken relationship
               AND NOT EXISTS (SELECT 1
                               FROM silver.erp_ship_method AS p
                               WHERE p.ship_method_id = x.ShipMethodID);
 
-
             ---------------------------------------------------------
             -- RULE 15: Status outside 1-6 -> error (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 15: Status outside 1-6 (error)';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'sales_order_header',
-                   'Status invalid',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'Status invalid', 'business rule', 'error', 'pass', 'Status',
                    CAST(x.SalesOrderID AS NVARCHAR(200)),
-                   CONCAT('Status ', x.Status, ' is not between 1 and 6'),
-                   'error'
+                   CONCAT('Status ', x.Status, ' is not between 1 and 6')
             FROM #b AS x
             WHERE x.Status NOT BETWEEN 1 AND 6;
 
@@ -481,27 +438,27 @@ BEGIN
             ---------------------------------------------------------
             PRINT '-- Rule 16: OrderDate in the future (error)';
 
-            INSERT INTO etl.data_quality_log
-                (batch_id, layer, object_name, check_name, record_id, description, severity)
-            SELECT @batch_id, 'bronze', 'sales_order_header',
-                   'OrderDate in the future',
+            INSERT INTO #errors (screen_name, screen_type, severity, exception_action, fields, record_id, error_condition)
+            SELECT 'OrderDate in the future', 'business rule', 'error', 'pass', 'OrderDate',
                    CAST(x.SalesOrderID AS NVARCHAR(200)),
-                   CONCAT('OrderDate ', CONVERT(VARCHAR(10), x.OrderDate, 23), ' is after today'),
-                   'error'
+                   CONCAT('OrderDate ', CONVERT(VARCHAR(10), x.OrderDate, 23), ' is after today')
             FROM #b AS x
             WHERE x.OrderDate > SYSDATETIME();
+
+            -- Save the errors in the error event schema (same transaction as the screens)
+            SELECT @errors = COUNT(*) FROM #errors WHERE severity IN ('error', 'critical');
+
+            EXEC etl.usp_save_error_events
+                 @batch_id    = @batch_id,
+                 @layer       = 'bronze',
+                 @object_name = 'sales_order_header',
+                 @etl_module  = @proc_name;
 
         COMMIT TRANSACTION;
 
         ---------------------------------------------------------
         -- Summary
         ---------------------------------------------------------
-        SELECT @errors = COUNT(*)
-        FROM etl.data_quality_log
-        WHERE batch_id   = @batch_id
-          AND layer       = 'bronze'
-          AND object_name = 'sales_order_header'
-          AND severity IN ('error','critical');
 
         SELECT @rows_rejected = COUNT(*)
         FROM etl.rejected
