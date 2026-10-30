@@ -85,6 +85,7 @@ BEGIN
     DECLARE
         @source_table VARCHAR(200),  @bronze_table VARCHAR(200),
         @load_type    VARCHAR(20),   @last_lsn     BINARY(10),
+        @cdc_enabled  BIT,
         @min_lsn      BINARY(10),    @max_lsn      BINARY(10),
         @from_lsn     BINARY(10),    @to_lsn       BINARY(10),
         @rows         INT = 0,
@@ -104,6 +105,7 @@ BEGIN
         SELECT @source_table = source_table,
                @bronze_table = bronze_table,
                @load_type    = load_type,
+               @cdc_enabled  = is_cdc_enabled,
                @last_lsn     = last_lsn
         FROM etl.config
         WHERE object_name = @object_name
@@ -112,8 +114,8 @@ BEGIN
         IF @source_table IS NULL
             THROW 52000, 'No active configuration found for the object in etl.config.', 1;
 
-        IF @load_type <> 'incremental'
-            THROW 52001, 'The object is not incremental in etl.config: CDC is used only by incremental objects.', 1;
+        IF @load_type <> 'incremental' OR @cdc_enabled = 0
+            THROW 52001, 'The object is not incremental with is_cdc_enabled = 1 in etl.config.', 1;
 
         ---------------------------------------------------------
         -- 2. Names derived from source_table

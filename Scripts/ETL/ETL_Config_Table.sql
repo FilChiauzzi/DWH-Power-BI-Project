@@ -18,6 +18,11 @@ Purpose:
     Rule: an SCD2 object (scd_type = '2') must be incremental:
     a full load truncates Silver and loses its history.
 
+    is_cdc_enabled (read by ETL/CDC/Enable_CDC_Source.sql):
+    1 = SQL Server CDC is enabled on the source table. An
+    incremental object needs is_cdc_enabled = 1: the Bronze
+    load stops with an error otherwise.
+
     Bookmarks:
     - last_lsn: Source -> Bronze, how far the CDC log was
       read. Filled by etl.usp_load_bronze_cdc.
@@ -25,10 +30,6 @@ Purpose:
       whose Bronze rows were processed by Silver with
       success. Filled by SSIS after each Load Silver.
 
-    The last row, fact_sales_order, describes the Gold fact.
-    It is inactive because the fact is loaded by its own
-    task at the end of the pipeline, not by the Bronze and
-    Silver loops.
 
 SSIS Usage:
     SSIS reads the active objects, ordered by load_order,
@@ -45,8 +46,8 @@ Warning:
       fills it again;
     - last_silver_batch_id NULL: Silver processes every row
       currently in Bronze.
-    CDC must already be enabled on the source tables of the
-    incremental objects (sys.sp_cdc_enable_table).
+    Then run ETL/CDC/Enable_CDC_Source.sql: it enables CDC on
+    the source tables with is_cdc_enabled = 1.
 */
 
 USE [DWH_AdventureWorks2025];
@@ -65,6 +66,7 @@ CREATE TABLE etl.config (
     object_type          VARCHAR(10)   NOT NULL,   -- source system: erp
     load_order           INT           NOT NULL,   -- parents before children
     load_type            VARCHAR(20)   NOT NULL,   -- full / incremental (CDC)
+    is_cdc_enabled       BIT           NOT NULL,   -- 1 = CDC enabled on the source table
     scd_type             VARCHAR(10)   NOT NULL,   -- 0 / 1 / 2
     source_table         VARCHAR(200)  NOT NULL,   -- table in the source database
     bronze_table         VARCHAR(200)  NOT NULL,
@@ -79,102 +81,100 @@ GO
 ---------------------------------------------------------
 -- Configuration values
 -- category, subcategory, sales_territory and ship_method are
--- small SCD1 objects and stay full. The other 11 have CDC
--- enabled on the source and become incremental once DQ and
--- Silver handle the I / U / D rows (sales_person included:
--- it is SCD2).
+-- small SCD1 objects: full, no CDC. The other 11 are
+-- incremental with CDC (sales_person included: it is SCD2).
 ---------------------------------------------------------
 INSERT INTO etl.config (
-    object_name, object_type, load_order, load_type, scd_type,
+    object_name, object_type, load_order, load_type, is_cdc_enabled, scd_type,
     source_table, bronze_table, silver_table,
     is_active, target_table
 )
 VALUES
-('category', 'erp', 10, 'full', '1',
+('category', 'erp', 10, 'full', 0, '1',
  'AdventureWorks2025.Production.ProductCategory',
  'bronze.erp_category',
  'silver.erp_category',
  1, 'dim_product'),
 
-('subcategory', 'erp', 20, 'full', '1',
+('subcategory', 'erp', 20, 'full', 0, '1',
  'AdventureWorks2025.Production.ProductSubcategory',
  'bronze.erp_subcategory',
  'silver.erp_subcategory',
  1, 'dim_product'),
 
-('product', 'erp', 30, 'full', '2',
+('product', 'erp', 30, 'incremental', 1, '2',
  'AdventureWorks2025.Production.Product',
  'bronze.erp_product',
  'silver.erp_product',
  1, 'dim_product'),
 
-('store', 'erp', 40, 'full', '1',
+('store', 'erp', 40, 'incremental', 1, '1',
  'AdventureWorks2025.Sales.Store',
  'bronze.erp_store',
  'silver.erp_store',
  1, 'dim_customer'),
 
-('country_region', 'erp', 50, 'full', '0',
+('country_region', 'erp', 50, 'incremental', 1, '0',
  'AdventureWorks2025.Person.CountryRegion',
  'bronze.erp_country_region',
  'silver.erp_country_region',
  1, 'dim_customer'),
 
-('person', 'erp', 60, 'full', '1',
+('person', 'erp', 60, 'incremental', 1, '1',
  'AdventureWorks2025.Person.Person',
  'bronze.erp_person',
  'silver.erp_person',
  1, 'dim_customer'),
 
-('sales_territory', 'erp', 70, 'full', '1',
+('sales_territory', 'erp', 70, 'full', 0, '1',
  'AdventureWorks2025.Sales.SalesTerritory',
  'bronze.erp_sales_territory',
  'silver.erp_sales_territory',
  1, 'dim_customer'),
 
-('customer', 'erp', 80, 'full', '2',
+('customer', 'erp', 80, 'incremental', 1, '2',
  'AdventureWorks2025.Sales.Customer',
  'bronze.erp_customer',
  'silver.erp_customer',
  1, 'dim_customer'),
 
-('employee', 'erp', 90, 'full', '1',
+('employee', 'erp', 90, 'incremental', 1, '1',
  'AdventureWorks2025.HumanResources.Employee',
  'bronze.erp_employee',
  'silver.erp_employee',
  1, 'dim_sales_person'),
 
-('sales_person', 'erp', 100, 'full', '2',
+('sales_person', 'erp', 100, 'incremental', 1, '2',
  'AdventureWorks2025.Sales.SalesPerson',
  'bronze.erp_sales_person',
  'silver.erp_sales_person',
  1, 'dim_sales_person'),
 
-('ship_method', 'erp', 110, 'full', '1',
+('ship_method', 'erp', 110, 'full', 0, '1',
  'AdventureWorks2025.Purchasing.ShipMethod',
  'bronze.erp_ship_method',
  'silver.erp_ship_method',
  1, 'dim_ship_method'),
 
-('state_province', 'erp', 120, 'full', '1',
+('state_province', 'erp', 120, 'incremental', 1, '1',
  'AdventureWorks2025.Person.StateProvince',
  'bronze.erp_state_province',
  'silver.erp_state_province',
  1, 'dim_geography'),
 
-('person_address', 'erp', 130, 'full', '1',
+('person_address', 'erp', 130, 'incremental', 1, '1',
  'AdventureWorks2025.Person.Address',
  'bronze.erp_person_address',
  'silver.erp_person_address',
  1, 'dim_geography'),
 
-('sales_order_header', 'erp', 140, 'full', '1',
+('sales_order_header', 'erp', 140, 'incremental', 1, '1',
  'AdventureWorks2025.Sales.SalesOrderHeader',
  'bronze.erp_sales_order_header',
  'silver.erp_sales_order_header',
  1, 'fact_sales_order'),
 
-('sales_order_detail', 'erp', 150, 'full', '1',
+('sales_order_detail', 'erp', 150, 'incremental', 1, '1',
  'AdventureWorks2025.Sales.SalesOrderDetail',
  'bronze.erp_sales_order_detail',
  'silver.erp_sales_order_detail',

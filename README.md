@@ -187,8 +187,9 @@ Run them in this order, on SQL Server with the `AdventureWorks2025` database ava
 |------:|----------------------------------------------------------|-------------------------------------------------------|
 | 1     | `Scripts/ETL/ETL_Init_Database.sql`                      | Creates the database and the schemas                  |
 | 2     | `Scripts/ETL/ETL_Config_Table.sql`                       | Creates the configuration table                       |
-| 2b    | `Scripts/ETL/CDC/Enable_CDC_Source.sql`                  | Enables CDC on the source (in production: the DBA; SQL Server Agent must run) |
+| 2b    | `Scripts/ETL/CDC/Enable_CDC_Source.sql`                  | Enables CDC on the source tables with `is_cdc_enabled = 1` in `etl.config` (in production: the DBA; SQL Server Agent must run) |
 | 3     | `Scripts/ETL/Audit/ETL_Batch.sql`, `ETL_Load_Audit.sql`, `ETL_Start_Batch.sql`, `ETL_Audit_Procedures.sql` | Create the run log (runs and steps) and its procedures |
+| 3b    | `Scripts/ETL/Profiling/ETL_Profile_Source.sql`           | Creates the profiling table and procedure             |
 | 4     | `Scripts/ETL/Error_Event/ETL_Rejected_Table.sql`, `ETL_Error_Event_Schema.sql` | Create the quarantine and the error event schema |
 | 5     | `Scripts/Bronze/Bronze_DDL.sql`                          | Creates the Bronze tables                             |
 | 6     | `Scripts/Silver/Silver_DDL.sql`                          | Creates the Silver tables and the sequences           |

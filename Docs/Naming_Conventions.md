@@ -202,6 +202,7 @@ Rules for `etl.config`:
 - `object_type` is the source system (`erp`).
 - `load_order` goes in steps of 10 (10, 20, 30...) and follows the dependencies: parents before children.
 - `load_type` is `full` or `incremental`.
+- `is_cdc_enabled` is 1 when SQL Server CDC is enabled on the source table: `Enable_CDC_Source.sql` reads it, and an `incremental` object needs it.
 - `scd_type` is `0` (static lookup), `1` or `2`.
 - `source_table`, `bronze_table`, `silver_table` store the full names (`AdventureWorks2025.Sales.Store`, `bronze.erp_store`, `silver.erp_store`). `target_table` stores the Gold object fed by the entity, as a logical name (for example `dim_product`).
 - `is_active` switches an object on or off without touching the code. The Gold fact has its own row (`fact_sales_order`), inactive because it is loaded by its own task at the end of the pipeline.
@@ -249,11 +250,21 @@ Load order of the pipeline: Bronze, Bronze quality checks, Silver dimensions (pa
 | `51000` | No active configuration found in `etl.config`                    |
 | `51001` | Invalid `load_type` (allowed: `full`, `incremental`)             |
 | `51002` | Bronze table not found                                           |
-| `51003` | Incremental load without a starting watermark                    |
+| `51003` | Incremental object with `is_cdc_enabled = 0` in `etl.config`     |
+| `51004` | Full load: source is empty, Bronze left untouched                |
+| `51005` | Full load: source dropped more than 50%, Bronze left untouched   |
 | `51010` | Rejection rate above the threshold: pipeline stopped on purpose  |
 | `51011` | Same as 51010, for the sales order header and detail             |
 | `51020` | Unsupported load type for the object                             |
 | `51030` | Source is empty: FULL load stopped to protect the target table   |
+| `52000` | CDC load: no active configuration                                |
+| `52001` | CDC load: object not incremental with `is_cdc_enabled = 1`       |
+| `52002` | CDC not enabled on the source table                              |
+| `52003` | CDC load: Bronze table not found                                 |
+| `52004` | CDC load: no key columns for the capture instance                |
+| `52005` | CDC full load: source is empty                                   |
+| `52006` | CDC full load: source dropped more than 50%                      |
+| `52007` | CDC: more than 50% of the rows deleted in one night (mass delete)|
 | `51100` | `usp_audit_start` called inside an open transaction              |
 | `51101` | Unknown `batch_id`: the run was not started with `usp_start_batch` |
 | `51110` | Invalid status for `usp_end_batch` (allowed: `succeeded`, `failed`) |

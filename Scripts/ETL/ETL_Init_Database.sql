@@ -38,7 +38,6 @@ CREATE DATABASE DWH_AdventureWorks2025;
 
 --Use DWH_AdventureWorks2025
 USE DWH_AdventureWorks2025;
-GO
 
 -- Create Schemas
 CREATE SCHEMA bronze;

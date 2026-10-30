@@ -76,6 +76,7 @@ BEGIN
     -- Declared before TRY: the CATCH block needs them for the audit
     DECLARE
         @load_type     VARCHAR(20),
+        @cdc_enabled   BIT,
         @rows_read     INT = 0,
         @rows_inserted INT = 0;
 
@@ -115,6 +116,7 @@ BEGIN
         ---------------------------------------------------------
         SELECT
             @load_type    = load_type,
+            @cdc_enabled  = is_cdc_enabled,
             @source_table = source_table,
             @bronze_table = bronze_table
         FROM etl.config
@@ -129,6 +131,9 @@ BEGIN
 
         IF @load_type NOT IN ('full', 'incremental')
             THROW 51001, 'Invalid load_type in etl.config. Allowed values: full, incremental.', 1;
+
+        IF @load_type = 'incremental' AND @cdc_enabled = 0
+            THROW 51003, 'Incremental object without CDC: set is_cdc_enabled = 1 in etl.config and run Enable_CDC_Source.sql.', 1;
 
         SET @start_time = SYSDATETIME();
 

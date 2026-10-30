@@ -99,7 +99,7 @@ The procedure names are built from `current_object_name`, so **a new object is a
 
 ## Design notes
 
-- **Full and incremental**: `load_type` in `etl.config`. `full` reloads the whole table every night; `incremental` reads only the changes with SQL Server CDC (inserts, updates and deletes). An SCD2 object must be incremental, otherwise the full reload of Silver loses its history.
+- **Full and incremental**: `load_type` in `etl.config` (an incremental object needs `is_cdc_enabled = 1`, the flag that `Enable_CDC_Source.sql` reads). `full` reloads the whole table every night; `incremental` reads only the changes with SQL Server CDC (inserts, updates and deletes). An SCD2 object must be incremental, otherwise the full reload of Silver loses its history.
 - **The load type is decided by the procedures**, not by the package: the package is the same for full and incremental objects.
 - **Run log**: every run is closed in `etl.batch` and every step is logged in `etl.load_audit`, so a failure is found with one query, without opening the SSIS logs.
 - **Metadata-driven**: the list of objects, their order and their load type come from `etl.config`.

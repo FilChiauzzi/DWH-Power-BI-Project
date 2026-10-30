@@ -4,14 +4,15 @@ CDC – Enable Change Data Capture on the source
 =========================================================
 Purpose:
     Enables SQL Server Change Data Capture on the source
-    database AdventureWorks2025 and on the 11 source tables
-    of the incremental objects (load_type = 'incremental'
-    in etl.config). Re-runnable: tables already tracked are
-    skipped.
+    database and on the source table of every object of
+    etl.config with is_cdc_enabled = 1. Metadata-driven: to
+    put CDC on a new table, set is_cdc_enabled = 1 in
+    etl.config and run this script again. Re-runnable: tables
+    already tracked are skipped.
 
 SSIS Usage:
-    Not executed by SSIS. Run once at deployment, before the
-    first incremental Bronze load.
+    Not executed by SSIS. Run once at deployment, after
+    ETL_Config_Table.sql, before the first incremental load.
 
 Warning:
     Needs sysadmin (database) and db_owner (tables). On a real
@@ -29,25 +30,16 @@ IF NOT EXISTS (SELECT 1 FROM sys.databases WHERE name = DB_NAME() AND is_cdc_ena
     EXEC sys.sp_cdc_enable_db;
 GO
 
--- 2. Table level: the source tables of the incremental objects
-DECLARE @tables TABLE (schema_name SYSNAME, table_name SYSNAME);
-INSERT INTO @tables VALUES
-    ('Production',     'Product'),
-    ('Sales',          'Store'),
-    ('Person',         'CountryRegion'),
-    ('Person',         'Person'),
-    ('Sales',          'Customer'),
-    ('HumanResources', 'Employee'),
-    ('Sales',          'SalesPerson'),
-    ('Person',         'StateProvince'),
-    ('Person',         'Address'),
-    ('Sales',          'SalesOrderHeader'),
-    ('Sales',          'SalesOrderDetail');
-
+-- 2. Table level: the source tables with is_cdc_enabled = 1 in etl.config
 DECLARE @schema SYSNAME, @table SYSNAME;
 
 DECLARE cur_cdc CURSOR LOCAL FAST_FORWARD FOR
-    SELECT schema_name, table_name FROM @tables;
+    SELECT PARSENAME(source_table, 2),          -- schema
+           PARSENAME(source_table, 1)           -- table
+    FROM DWH_AdventureWorks2025.etl.config
+    WHERE is_cdc_enabled = 1
+      AND is_active = 1
+    ORDER BY load_order;
 
 OPEN cur_cdc;
 FETCH NEXT FROM cur_cdc INTO @schema, @table;
@@ -78,5 +70,5 @@ DEALLOCATE cur_cdc;
 
 SELECT capture_instance, supports_net_changes, create_date
 FROM cdc.change_tables
-ORDER BY capture_instance;     -- expected: 11 rows
+ORDER BY capture_instance;
 GO
