@@ -24,6 +24,17 @@ Purpose:
     they carry only the key. With a full load Bronze holds only
     the current batch, so every row is checked as before.
 
+    Severity policy (same in every quality check):
+      critical  the row cannot be identified (business key NULL
+                or duplicated): logged AND set aside in
+                etl.rejected, it does not reach Silver;
+      error     the row is identified but a value is wrong:
+                logged, the row goes on to Silver;
+      warning   a value is suspicious but plausible: logged,
+                the row goes on to Silver.
+    (Kimball, subsystem 4: tag rather than suspend whenever
+    possible.)
+
 SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline,
     before the Silver load of the same object. SSIS passes
@@ -123,7 +134,7 @@ BEGIN
             END
 
             ---------------------------------------------------------
-            -- RULE 1: business key NULL  ->  error (blocking)
+            -- RULE 1: business key NULL -> critical (row set aside)
             ---------------------------------------------------------
             PRINT '-- Rule 1: ProductCategoryID NULL';
 
@@ -133,7 +144,7 @@ BEGIN
                    'ProductCategoryID NULL',
                    CAST(b.ProductCategoryID AS NVARCHAR(200)),
                    'Business key ProductCategoryID is NULL',
-                   'error'
+                   'critical'
             FROM #b AS b
             WHERE b.ProductCategoryID IS NULL;
 
@@ -145,7 +156,7 @@ BEGIN
                    CAST(b.ProductCategoryID AS NVARCHAR(200)),
                    'NULL_BK',
                    'Business key ProductCategoryID is NULL',
-                   'error',
+                   'critical',
                    JSON_OBJECT('ProductCategoryID': b.ProductCategoryID,
                                'Name':              b.[Name],
                                'rowguid':           b.rowguid,
@@ -155,7 +166,7 @@ BEGIN
             WHERE b.ProductCategoryID IS NULL;
 
             ---------------------------------------------------------
-            -- RULE 2: duplicated business key  ->  error (blocking)
+            -- RULE 2: duplicated business key -> critical (row set aside)
             ---------------------------------------------------------
             PRINT '-- Rule 2: duplicated ProductCategoryID';
 
@@ -165,7 +176,7 @@ BEGIN
                    'Duplicate ProductCategoryID',
                    CAST(b.ProductCategoryID AS NVARCHAR(200)),
                    'Business key duplicated: ' + CAST(COUNT(*) AS VARCHAR(10)) + ' rows',
-                   'error'
+                   'critical'
             FROM #b AS b
             GROUP BY b.ProductCategoryID
             HAVING COUNT(*) > 1;
@@ -177,7 +188,7 @@ BEGIN
                    CAST(b.ProductCategoryID AS NVARCHAR(200)),
                    'DUP_BK',
                    'Business key duplicated: ' + CAST(d.cnt AS VARCHAR(10)) + ' rows',
-                   'error',
+                   'critical',
                    JSON_OBJECT('ProductCategoryID': b.ProductCategoryID,
                                'Name':              b.[Name],
                                'rowguid':           b.rowguid,
@@ -193,7 +204,7 @@ BEGIN
                 ON d.ProductCategoryID = b.ProductCategoryID;
 
             ---------------------------------------------------------
-            -- RULE 3: name NULL or empty  ->  warning
+            -- RULE 3: name NULL or empty -> warning (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 3: name NULL or empty (warning)';
 

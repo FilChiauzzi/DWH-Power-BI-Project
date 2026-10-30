@@ -24,6 +24,21 @@ Purpose:
     they carry only the key. With a full load Bronze holds only
     the current batch, so every row is checked as before.
 
+    Severity policy (same in every quality check):
+      critical  the row cannot be identified (business key NULL
+                or duplicated): logged AND set aside in
+                etl.rejected, it does not reach Silver;
+      error     the row is identified but a value is wrong:
+                logged, the row goes on to Silver;
+      warning   a value is suspicious but plausible: logged,
+                the row goes on to Silver.
+    Structure screens check that every foreign key points to
+    a row that exists in the Silver parent table (loaded
+    earlier in the run); a missing parent is an error and the
+    Silver load uses the unknown member (-1).
+    (Kimball, subsystem 4: tag rather than suspend whenever
+    possible.)
+
 SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline,
     before the Silver load of the same object. SSIS passes
@@ -127,7 +142,7 @@ BEGIN
             END
 
             ---------------------------------------------------------
-            -- RULE 1: TerritoryID NULL -> error
+            -- RULE 1: TerritoryID NULL -> critical (row set aside)
             ---------------------------------------------------------
             PRINT '-- Rule 1: TerritoryID NULL';
 
@@ -137,7 +152,7 @@ BEGIN
                    'TerritoryID NULL',
                    CAST(b.TerritoryID AS NVARCHAR(200)),
                    'TerritoryID is NULL',
-                   'error'
+                   'critical'
             FROM #b b
             WHERE b.TerritoryID IS NULL;
 
@@ -148,7 +163,7 @@ BEGIN
                    CAST(b.TerritoryID AS NVARCHAR(200)),
                    'NULL_BK',
                    'TerritoryID is NULL',
-                   'error',
+                   'critical',
                    JSON_OBJECT(
                        'TerritoryID':       b.TerritoryID,
                        'Name':              b.Name,
@@ -161,7 +176,7 @@ BEGIN
             WHERE b.TerritoryID IS NULL;
 
             ---------------------------------------------------------
-            -- RULE 2: Duplicate TerritoryID -> error
+            -- RULE 2: Duplicate TerritoryID -> critical (row set aside)
             ---------------------------------------------------------
             PRINT '-- Rule 2: Duplicate TerritoryID';
 
@@ -171,7 +186,7 @@ BEGIN
                    'Duplicate TerritoryID',
                    CAST(b.TerritoryID AS NVARCHAR(200)),
                    'Duplicate TerritoryID detected: ' + CAST(COUNT(*) AS VARCHAR(10)) + ' rows',
-                   'error'
+                   'critical'
             FROM #b b
             GROUP BY b.TerritoryID
             HAVING COUNT(*) > 1;
@@ -183,7 +198,7 @@ BEGIN
                    CAST(b.TerritoryID AS NVARCHAR(200)),
                    'DUP_BK',
                    'Duplicate TerritoryID detected: ' + CAST(d.cnt AS VARCHAR(10)) + ' rows',
-                   'error',
+                   'critical',
                    JSON_OBJECT(
                        'TerritoryID':       b.TerritoryID,
                        'Name':              b.Name,
@@ -202,7 +217,7 @@ BEGIN
                 ON d.TerritoryID = b.TerritoryID;
 
             ---------------------------------------------------------
-            -- RULE 3: Name NULL or empty -> warning
+            -- RULE 3: Name NULL or empty -> warning (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 3: Name NULL or empty (warning)';
 
@@ -218,7 +233,7 @@ BEGIN
                OR TRIM(b.Name) = '';
 
             ---------------------------------------------------------
-            -- RULE 4: Group NULL or empty -> error
+            -- RULE 4: Group NULL or empty -> error (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 4: Group NULL or empty';
 
@@ -233,28 +248,8 @@ BEGIN
             WHERE b.[Group] IS NULL
                OR TRIM(b.[Group]) = '';
 
-            INSERT INTO etl.rejected
-                (batch_id, layer, object_name, business_key, rule_code,
-                 rule_description, severity, raw_row)
-            SELECT @batch_id, 'bronze', 'sales_territory',
-                   CAST(b.TerritoryID AS NVARCHAR(200)),
-                   'NULL_GROUP',
-                   'Group is NULL or empty',
-                   'error',
-                   JSON_OBJECT(
-                       'TerritoryID':       b.TerritoryID,
-                       'Name':              b.Name,
-                       'CountryRegionCode': b.CountryRegionCode,
-                       'Group':             b.[Group],
-                       'ModifiedDate':      b.ModifiedDate
-                       NULL ON NULL
-                   )
-            FROM #b b
-            WHERE b.[Group] IS NULL
-               OR TRIM(b.[Group]) = '';
-
             ---------------------------------------------------------
-            -- RULE 5: CountryRegionCode NULL or empty -> error
+            -- RULE 5: CountryRegionCode NULL or empty -> error (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 5: CountryRegionCode NULL or empty';
 
@@ -269,25 +264,24 @@ BEGIN
             WHERE b.CountryRegionCode IS NULL
                OR TRIM(b.CountryRegionCode) = '';
 
-            INSERT INTO etl.rejected
-                (batch_id, layer, object_name, business_key, rule_code,
-                 rule_description, severity, raw_row)
+
+            ---------------------------------------------------------
+            -- RULE 6: Country not found in Silver -> error (row passes)
+            ---------------------------------------------------------
+            PRINT '-- Rule 6: Country not found (error)';
+
+            INSERT INTO etl.data_quality_log
+                (batch_id, layer, object_name, check_name, record_id, description, severity)
             SELECT @batch_id, 'bronze', 'sales_territory',
-                   CAST(b.TerritoryID AS NVARCHAR(200)),
-                   'NULL_COUNTRY',
-                   'CountryRegionCode is NULL or empty',
-                   'error',
-                   JSON_OBJECT(
-                       'TerritoryID':       b.TerritoryID,
-                       'Name':              b.Name,
-                       'CountryRegionCode': b.CountryRegionCode,
-                       'Group':             b.[Group],
-                       'ModifiedDate':      b.ModifiedDate
-                       NULL ON NULL
-                   )
-            FROM #b b
-            WHERE b.CountryRegionCode IS NULL
-               OR TRIM(b.CountryRegionCode) = '';
+                   'Country not found',
+                   CAST(x.TerritoryID AS NVARCHAR(200)),
+                   CONCAT('CountryRegionCode ', x.CountryRegionCode, ' does not exist in silver.erp_country_region - Silver uses -1'),
+                   'error'
+            FROM #b AS x
+            WHERE x.CountryRegionCode IS NOT NULL                 -- a NULL is not a broken relationship
+              AND NOT EXISTS (SELECT 1
+                              FROM silver.erp_country_region AS p
+                              WHERE p.country_code = x.CountryRegionCode);
 
         COMMIT TRANSACTION;
 

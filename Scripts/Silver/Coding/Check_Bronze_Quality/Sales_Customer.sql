@@ -24,6 +24,24 @@ Purpose:
     they carry only the key. With a full load Bronze holds only
     the current batch, so every row is checked as before.
 
+    Severity policy (same in every quality check):
+      critical  the row cannot be identified (business key NULL
+                or duplicated): logged AND set aside in
+                etl.rejected, it does not reach Silver;
+      error     the row is identified but a value is wrong:
+                logged, the row goes on to Silver;
+      warning   a value is suspicious but plausible: logged,
+                the row goes on to Silver.
+    Structure screens check that every foreign key points to
+    a row that exists in the Silver parent table (loaded
+    earlier in the run); a missing parent is an error and the
+    Silver load uses the unknown member (-1).
+    Business rule screens (point 5 of subsystem 4) test values
+    against each other: dates in the right order, codes in their
+    allowed range, a customer that is a person or a store.
+    (Kimball, subsystem 4: tag rather than suspend whenever
+    possible.)
+
 SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline,
     before the Silver load of the same object. SSIS passes
@@ -127,7 +145,7 @@ BEGIN
             END
 
             ---------------------------------------------------------
-            -- RULE 1: CustomerID NULL -> error
+            -- RULE 1: CustomerID NULL -> critical (row set aside)
             ---------------------------------------------------------
             PRINT '-- Rule 1: CustomerID NULL';
 
@@ -137,7 +155,7 @@ BEGIN
                    'CustomerID NULL',
                    CAST(b.CustomerID AS NVARCHAR(200)),
                    'CustomerID is NULL',
-                   'error'
+                   'critical'
             FROM #b b
             WHERE b.CustomerID IS NULL;
 
@@ -148,7 +166,7 @@ BEGIN
                    CAST(b.CustomerID AS NVARCHAR(200)),
                    'NULL_BK',
                    'CustomerID is NULL',
-                   'error',
+                   'critical',
                    JSON_OBJECT(
                        'CustomerID':    b.CustomerID,
                        'PersonID':      b.PersonID,
@@ -162,7 +180,7 @@ BEGIN
             WHERE b.CustomerID IS NULL;
 
             ---------------------------------------------------------
-            -- RULE 2: Duplicate CustomerID -> error
+            -- RULE 2: Duplicate CustomerID -> critical (row set aside)
             ---------------------------------------------------------
             PRINT '-- Rule 2: Duplicate CustomerID';
 
@@ -172,7 +190,7 @@ BEGIN
                    'Duplicate CustomerID',
                    CAST(b.CustomerID AS NVARCHAR(200)),
                    'Duplicate CustomerID detected: ' + CAST(COUNT(*) AS VARCHAR(10)) + ' rows',
-                   'error'
+                   'critical'
             FROM #b b
             GROUP BY b.CustomerID
             HAVING COUNT(*) > 1;
@@ -184,7 +202,7 @@ BEGIN
                    CAST(b.CustomerID AS NVARCHAR(200)),
                    'DUP_BK',
                    'Duplicate CustomerID detected: ' + CAST(d.cnt AS VARCHAR(10)) + ' rows',
-                   'error',
+                   'critical',
                    JSON_OBJECT(
                        'CustomerID':    b.CustomerID,
                        'PersonID':      b.PersonID,
@@ -204,7 +222,7 @@ BEGIN
                 ON d.CustomerID = b.CustomerID;
 
             ---------------------------------------------------------
-            -- RULE 3: TerritoryID NULL -> error
+            -- RULE 3: TerritoryID NULL -> error (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 3: TerritoryID NULL';
 
@@ -218,25 +236,76 @@ BEGIN
             FROM #b b
             WHERE b.TerritoryID IS NULL;
 
-            INSERT INTO etl.rejected
-                (batch_id, layer, object_name, business_key, rule_code,
-                 rule_description, severity, raw_row)
+
+            ---------------------------------------------------------
+            -- RULE 4: Territory not found in Silver -> error (row passes)
+            ---------------------------------------------------------
+            PRINT '-- Rule 4: Territory not found (error)';
+
+            INSERT INTO etl.data_quality_log
+                (batch_id, layer, object_name, check_name, record_id, description, severity)
             SELECT @batch_id, 'bronze', 'customer',
-                   CAST(b.CustomerID AS NVARCHAR(200)),
-                   'NULL_TERRITORY',
-                   'TerritoryID is NULL',
-                   'error',
-                   JSON_OBJECT(
-                       'CustomerID':    b.CustomerID,
-                       'PersonID':      b.PersonID,
-                       'StoreID':       b.StoreID,
-                       'TerritoryID':   b.TerritoryID,
-                       'AccountNumber': b.AccountNumber,
-                       'ModifiedDate':  b.ModifiedDate
-                       NULL ON NULL
-                   )
-            FROM #b b
-            WHERE b.TerritoryID IS NULL;
+                   'Territory not found',
+                   CAST(x.CustomerID AS NVARCHAR(200)),
+                   CONCAT('TerritoryID ', x.TerritoryID, ' does not exist in silver.erp_sales_territory - Silver uses -1'),
+                   'error'
+            FROM #b AS x
+            WHERE x.TerritoryID IS NOT NULL                 -- a NULL is not a broken relationship
+              AND NOT EXISTS (SELECT 1
+                              FROM silver.erp_sales_territory AS p
+                              WHERE p.territory_id = x.TerritoryID);
+
+            ---------------------------------------------------------
+            -- RULE 5: Person not found in Silver -> error (row passes)
+            ---------------------------------------------------------
+            PRINT '-- Rule 5: Person not found (error)';
+
+            INSERT INTO etl.data_quality_log
+                (batch_id, layer, object_name, check_name, record_id, description, severity)
+            SELECT @batch_id, 'bronze', 'customer',
+                   'Person not found',
+                   CAST(x.CustomerID AS NVARCHAR(200)),
+                   CONCAT('PersonID ', x.PersonID, ' does not exist in silver.erp_person - Silver uses -1'),
+                   'error'
+            FROM #b AS x
+            WHERE x.PersonID IS NOT NULL                 -- a NULL is not a broken relationship
+              AND NOT EXISTS (SELECT 1
+                              FROM silver.erp_person AS p
+                              WHERE p.person_id = x.PersonID);
+
+            ---------------------------------------------------------
+            -- RULE 6: Store not found in Silver -> error (row passes)
+            ---------------------------------------------------------
+            PRINT '-- Rule 6: Store not found (error)';
+
+            INSERT INTO etl.data_quality_log
+                (batch_id, layer, object_name, check_name, record_id, description, severity)
+            SELECT @batch_id, 'bronze', 'customer',
+                   'Store not found',
+                   CAST(x.CustomerID AS NVARCHAR(200)),
+                   CONCAT('StoreID ', x.StoreID, ' does not exist in silver.erp_store - Silver uses -1'),
+                   'error'
+            FROM #b AS x
+            WHERE x.StoreID IS NOT NULL                 -- a NULL is not a broken relationship
+              AND NOT EXISTS (SELECT 1
+                              FROM silver.erp_store AS p
+                              WHERE p.store_id = x.StoreID);
+
+
+            ---------------------------------------------------------
+            -- RULE 7: Neither person nor store -> error (row passes)
+            ---------------------------------------------------------
+            PRINT '-- Rule 7: Neither person nor store (error)';
+
+            INSERT INTO etl.data_quality_log
+                (batch_id, layer, object_name, check_name, record_id, description, severity)
+            SELECT @batch_id, 'bronze', 'customer',
+                   'Customer without person or store',
+                   CAST(x.CustomerID AS NVARCHAR(200)),
+                   'PersonID and StoreID are both NULL: the customer is neither a person nor a store',
+                   'error'
+            FROM #b AS x
+            WHERE x.PersonID IS NULL AND x.StoreID IS NULL;
 
         COMMIT TRANSACTION;
 

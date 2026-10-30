@@ -24,6 +24,17 @@ Purpose:
     they carry only the key. With a full load Bronze holds only
     the current batch, so every row is checked as before.
 
+    Severity policy (same in every quality check):
+      critical  the row cannot be identified (business key NULL
+                or duplicated): logged AND set aside in
+                etl.rejected, it does not reach Silver;
+      error     the row is identified but a value is wrong:
+                logged, the row goes on to Silver;
+      warning   a value is suspicious but plausible: logged,
+                the row goes on to Silver.
+    (Kimball, subsystem 4: tag rather than suspend whenever
+    possible.)
+
 SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline,
     before the Silver load of the same object. SSIS passes
@@ -127,7 +138,7 @@ BEGIN
             END
 
             ---------------------------------------------------------
-            -- RULE 1: BusinessEntityID NULL -> error (blocking)
+            -- RULE 1: BusinessEntityID NULL -> critical (row set aside)
             ---------------------------------------------------------
             PRINT '-- Rule 1: BusinessEntityID NULL';
 
@@ -137,7 +148,7 @@ BEGIN
                    'BusinessEntityID NULL',
                    CAST(b.BusinessEntityID AS NVARCHAR(200)),
                    'BusinessEntityID is NULL',
-                   'error'
+                   'critical'
             FROM #b AS b
             WHERE b.BusinessEntityID IS NULL;
 
@@ -148,7 +159,7 @@ BEGIN
                    CAST(b.BusinessEntityID AS NVARCHAR(200)),
                    'NULL_BK',
                    'BusinessEntityID is NULL',
-                   'error',
+                   'critical',
                    JSON_OBJECT('BusinessEntityID': b.BusinessEntityID,
                                'Name':              b.[Name],
                                'SalesPersonID':     b.SalesPersonID,
@@ -160,7 +171,7 @@ BEGIN
             WHERE b.BusinessEntityID IS NULL;
 
             ---------------------------------------------------------
-            -- RULE 2: Duplicate BusinessEntityID -> error (blocking)
+            -- RULE 2: Duplicate BusinessEntityID -> critical (row set aside)
             ---------------------------------------------------------
             PRINT '-- Rule 2: Duplicate BusinessEntityID';
 
@@ -170,7 +181,7 @@ BEGIN
                    'Duplicate BusinessEntityID',
                    CAST(b.BusinessEntityID AS NVARCHAR(200)),
                    'Duplicate BusinessEntityID detected: ' + CAST(COUNT(*) AS VARCHAR(10)) + ' rows',
-                   'error'
+                   'critical'
             FROM #b AS b
             GROUP BY b.BusinessEntityID
             HAVING COUNT(*) > 1;
@@ -182,7 +193,7 @@ BEGIN
                    CAST(b.BusinessEntityID AS NVARCHAR(200)),
                    'DUP_BK',
                    'Duplicate BusinessEntityID detected: ' + CAST(d.cnt AS VARCHAR(10)) + ' rows',
-                   'error',
+                   'critical',
                    JSON_OBJECT('BusinessEntityID': b.BusinessEntityID,
                                'Name':              b.[Name],
                                'SalesPersonID':     b.SalesPersonID,
@@ -200,7 +211,7 @@ BEGIN
                 ON d.BusinessEntityID = b.BusinessEntityID;
 
             ---------------------------------------------------------
-            -- RULE 3: Name NULL or empty -> warning
+            -- RULE 3: Name NULL or empty -> warning (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 3: Name NULL or empty (warning)';
 
@@ -216,7 +227,7 @@ BEGIN
                OR LTRIM(RTRIM(b.[Name])) = '';
 
             ---------------------------------------------------------
-            -- RULE 4: ModifiedDate NULL -> error
+            -- RULE 4: ModifiedDate NULL -> error (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 4: ModifiedDate NULL';
 

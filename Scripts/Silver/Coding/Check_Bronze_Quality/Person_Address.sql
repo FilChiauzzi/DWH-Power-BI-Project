@@ -24,6 +24,21 @@ Purpose:
     they carry only the key. With a full load Bronze holds only
     the current batch, so every row is checked as before.
 
+    Severity policy (same in every quality check):
+      critical  the row cannot be identified (business key NULL
+                or duplicated): logged AND set aside in
+                etl.rejected, it does not reach Silver;
+      error     the row is identified but a value is wrong:
+                logged, the row goes on to Silver;
+      warning   a value is suspicious but plausible: logged,
+                the row goes on to Silver.
+    Structure screens check that every foreign key points to
+    a row that exists in the Silver parent table (loaded
+    earlier in the run); a missing parent is an error and the
+    Silver load uses the unknown member (-1).
+    (Kimball, subsystem 4: tag rather than suspend whenever
+    possible.)
+
 SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline,
     before the Silver load of the same object. SSIS passes
@@ -122,7 +137,7 @@ BEGIN
             END
 
             ---------------------------------------------------------
-            -- RULE 1: AddressID NULL -> error
+            -- RULE 1: AddressID NULL -> critical (row set aside)
             ---------------------------------------------------------
             PRINT '-- Rule 1: AddressID NULL';
 
@@ -132,7 +147,7 @@ BEGIN
                    'AddressID NULL',
                    NULL,
                    'AddressID is NULL',
-                   'error'
+                   'critical'
             FROM #b
             WHERE AddressID IS NULL;
 
@@ -143,7 +158,7 @@ BEGIN
                    NULL,
                    'NULL_BK',
                    'Business key AddressID is NULL',
-                   'error',
+                   'critical',
                    JSON_OBJECT('AddressID': b.AddressID,
                                'AddressLine1': b.AddressLine1,
                                'City': b.City,
@@ -154,7 +169,7 @@ BEGIN
             WHERE b.AddressID IS NULL;
 
             ---------------------------------------------------------
-            -- RULE 2: Duplicate AddressID -> error
+            -- RULE 2: Duplicate AddressID -> critical (row set aside)
             ---------------------------------------------------------
             PRINT '-- Rule 2: Duplicate AddressID';
 
@@ -164,7 +179,7 @@ BEGIN
                    'Duplicate AddressID',
                    CAST(AddressID AS NVARCHAR(200)),
                    'Duplicate AddressID detected: ' + CAST(COUNT(*) AS VARCHAR(10)) + ' rows',
-                   'error'
+                   'critical'
             FROM #b
             GROUP BY AddressID
             HAVING COUNT(*) > 1;
@@ -176,7 +191,7 @@ BEGIN
                    CAST(b.AddressID AS NVARCHAR(200)),
                    'DUP_BK',
                    'Duplicate AddressID detected: ' + CAST(d.cnt AS VARCHAR(10)) + ' rows',
-                   'error',
+                   'critical',
                    JSON_OBJECT('AddressID': b.AddressID,
                                'AddressLine1': b.AddressLine1,
                                'City': b.City,
@@ -193,7 +208,7 @@ BEGIN
                 ON d.AddressID = b.AddressID;
 
             ---------------------------------------------------------
-            -- RULE 3: City NULL -> warning
+            -- RULE 3: City NULL -> warning (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 3: City NULL (warning)';
 
@@ -208,7 +223,7 @@ BEGIN
             WHERE City IS NULL;
 
             ---------------------------------------------------------
-            -- RULE 4: StateProvinceID NULL -> error
+            -- RULE 4: StateProvinceID NULL -> error (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 4: StateProvinceID NULL';
 
@@ -222,25 +237,8 @@ BEGIN
             FROM #b
             WHERE StateProvinceID IS NULL;
 
-            INSERT INTO etl.rejected
-                (batch_id, layer, object_name, business_key, rule_code,
-                 rule_description, severity, raw_row)
-            SELECT @batch_id, 'bronze', 'person_address',
-                   CAST(b.AddressID AS NVARCHAR(200)),
-                   'NULL_FK',
-                   'Foreign key StateProvinceID is NULL',
-                   'error',
-                   JSON_OBJECT('AddressID': b.AddressID,
-                               'AddressLine1': b.AddressLine1,
-                               'City': b.City,
-                               'StateProvinceID': b.StateProvinceID,
-                               'PostalCode': b.PostalCode
-                               NULL ON NULL)
-            FROM #b AS b
-            WHERE b.StateProvinceID IS NULL;
-
             ---------------------------------------------------------
-            -- RULE 5: PostalCode NULL -> warning
+            -- RULE 5: PostalCode NULL -> warning (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 5: PostalCode NULL (warning)';
 
@@ -253,6 +251,25 @@ BEGIN
                    'warning'
             FROM #b
             WHERE PostalCode IS NULL;
+
+
+            ---------------------------------------------------------
+            -- RULE 6: State/province not found in Silver -> error (row passes)
+            ---------------------------------------------------------
+            PRINT '-- Rule 6: State/province not found (error)';
+
+            INSERT INTO etl.data_quality_log
+                (batch_id, layer, object_name, check_name, record_id, description, severity)
+            SELECT @batch_id, 'bronze', 'person_address',
+                   'State/province not found',
+                   CAST(x.AddressID AS NVARCHAR(200)),
+                   CONCAT('StateProvinceID ', x.StateProvinceID, ' does not exist in silver.erp_state_province - Silver uses -1'),
+                   'error'
+            FROM #b AS x
+            WHERE x.StateProvinceID IS NOT NULL                 -- a NULL is not a broken relationship
+              AND NOT EXISTS (SELECT 1
+                              FROM silver.erp_state_province AS p
+                              WHERE p.state_province_id = x.StateProvinceID);
 
         COMMIT TRANSACTION;
 

@@ -23,6 +23,21 @@ Purpose:
     they carry only the key. With a full load Bronze holds only
     the current batch, so every row is checked as before.
 
+    Severity policy (same in every quality check):
+      critical  the row cannot be identified (business key NULL
+                or duplicated): logged AND set aside in
+                etl.rejected, it does not reach Silver;
+      error     the row is identified but a value is wrong:
+                logged, the row goes on to Silver;
+      warning   a value is suspicious but plausible: logged,
+                the row goes on to Silver.
+    Structure screens check that every foreign key points to
+    a row that exists in the Silver parent table (loaded
+    earlier in the run); a missing parent is an error and the
+    Silver load uses the unknown member (-1).
+    (Kimball, subsystem 4: tag rather than suspend whenever
+    possible.)
+
 SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline,
     before the Silver load of the same object. SSIS passes
@@ -126,7 +141,7 @@ BEGIN
             END
 
             ---------------------------------------------------------
-            -- RULE 1: ProductSubcategoryID NULL -> error (blocking)
+            -- RULE 1: ProductSubcategoryID NULL -> critical (row set aside)
             ---------------------------------------------------------
             PRINT '-- Rule 1: ProductSubcategoryID NULL';
 
@@ -136,7 +151,7 @@ BEGIN
                    'SubCategoryID NULL',
                    CAST(b.ProductSubcategoryID AS NVARCHAR(200)),
                    'ProductSubcategoryID is NULL',
-                   'error'
+                   'critical'
             FROM #b AS b
             WHERE b.ProductSubcategoryID IS NULL;
 
@@ -147,7 +162,7 @@ BEGIN
                    CAST(b.ProductSubcategoryID AS NVARCHAR(200)),
                    'NULL_BK',
                    'Business key ProductSubcategoryID is NULL',
-                   'error',
+                   'critical',
                    JSON_OBJECT('ProductSubcategoryID': b.ProductSubcategoryID,
                                'ProductCategoryID': b.ProductCategoryID,
                                'Name':              b.[Name],
@@ -158,7 +173,7 @@ BEGIN
             WHERE b.ProductSubcategoryID IS NULL;
 
             ---------------------------------------------------------
-            -- RULE 2: ProductCategoryID NULL -> error (blocking)
+            -- RULE 2: ProductCategoryID NULL -> error (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 2: ProductCategoryID NULL';
 
@@ -172,25 +187,8 @@ BEGIN
             FROM #b AS b
             WHERE b.ProductCategoryID IS NULL;
 
-            INSERT INTO etl.rejected
-                (batch_id, layer, object_name, business_key, rule_code,
-                 rule_description, severity, raw_row)
-            SELECT @batch_id, 'bronze', 'subcategory',
-                   CAST(b.ProductSubcategoryID AS NVARCHAR(200)),
-                   'NULL_FK',
-                   'Foreign key ProductCategoryID is NULL',
-                   'error',
-                   JSON_OBJECT('ProductSubcategoryID': b.ProductSubcategoryID,
-                               'ProductCategoryID': b.ProductCategoryID,
-                               'Name':              b.[Name],
-                               'rowguid':           b.rowguid,
-                               'ModifiedDate':      b.ModifiedDate
-                               NULL ON NULL)
-            FROM #b AS b
-            WHERE b.ProductCategoryID IS NULL;
-
             ---------------------------------------------------------
-            -- RULE 3: Duplicate ProductSubcategoryID -> error
+            -- RULE 3: Duplicate ProductSubcategoryID -> critical (row set aside)
             ---------------------------------------------------------
             PRINT '-- Rule 3: Duplicate ProductSubcategoryID';
 
@@ -200,7 +198,7 @@ BEGIN
                    'Duplicate SubCategoryID',
                    CAST(b.ProductSubcategoryID AS NVARCHAR(200)),
                    'Duplicate ProductSubcategoryID detected: ' + CAST(COUNT(*) AS VARCHAR(10)) + ' rows',
-                   'error'
+                   'critical'
             FROM #b AS b
             GROUP BY b.ProductSubcategoryID
             HAVING COUNT(*) > 1;
@@ -212,7 +210,7 @@ BEGIN
                    CAST(b.ProductSubcategoryID AS NVARCHAR(200)),
                    'DUP_BK',
                    'Duplicate ProductSubcategoryID detected: ' + CAST(d.cnt AS VARCHAR(10)) + ' rows',
-                   'error',
+                   'critical',
                    JSON_OBJECT('ProductSubcategoryID': b.ProductSubcategoryID,
                                'ProductCategoryID': b.ProductCategoryID,
                                'Name':              b.[Name],
@@ -229,7 +227,7 @@ BEGIN
                 ON d.ProductSubcategoryID = b.ProductSubcategoryID;
 
             ---------------------------------------------------------
-            -- RULE 4: Name NULL or empty -> warning (NOT blocking)
+            -- RULE 4: Name NULL or empty -> warning (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 4: Name NULL or empty (warning)';
 
@@ -243,6 +241,25 @@ BEGIN
             FROM #b AS b
             WHERE b.[Name] IS NULL
                OR LTRIM(RTRIM(b.[Name])) = '';
+
+
+            ---------------------------------------------------------
+            -- RULE 5: Category not found in Silver -> error (row passes)
+            ---------------------------------------------------------
+            PRINT '-- Rule 5: Category not found (error)';
+
+            INSERT INTO etl.data_quality_log
+                (batch_id, layer, object_name, check_name, record_id, description, severity)
+            SELECT @batch_id, 'bronze', 'subcategory',
+                   'Category not found',
+                   CAST(x.ProductSubcategoryID AS NVARCHAR(200)),
+                   CONCAT('ProductCategoryID ', x.ProductCategoryID, ' does not exist in silver.erp_category - Silver uses -1'),
+                   'error'
+            FROM #b AS x
+            WHERE x.ProductCategoryID IS NOT NULL                 -- a NULL is not a broken relationship
+              AND NOT EXISTS (SELECT 1
+                              FROM silver.erp_category AS p
+                              WHERE p.category_id = x.ProductCategoryID);
 
         COMMIT TRANSACTION;
 

@@ -24,6 +24,17 @@ Purpose:
     they carry only the key. With a full load Bronze holds only
     the current batch, so every row is checked as before.
 
+    Severity policy (same in every quality check):
+      critical  the row cannot be identified (business key NULL
+                or duplicated): logged AND set aside in
+                etl.rejected, it does not reach Silver;
+      error     the row is identified but a value is wrong:
+                logged, the row goes on to Silver;
+      warning   a value is suspicious but plausible: logged,
+                the row goes on to Silver.
+    (Kimball, subsystem 4: tag rather than suspend whenever
+    possible.)
+
 SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline,
     before the Silver load of the same object. SSIS passes
@@ -127,7 +138,7 @@ BEGIN
             END
 
             ---------------------------------------------------------
-            -- RULE 1: CountryRegionCode NULL -> error (blocking)
+            -- RULE 1: CountryRegionCode NULL -> critical (row set aside)
             ---------------------------------------------------------
             PRINT '-- Rule 1: CountryRegionCode NULL';
 
@@ -137,7 +148,7 @@ BEGIN
                    'CountryRegionCode NULL',
                    CAST(b.CountryRegionCode AS NVARCHAR(200)),
                    'CountryRegionCode is NULL',
-                   'error'
+                   'critical'
             FROM #b AS b
             WHERE b.CountryRegionCode IS NULL;
 
@@ -148,7 +159,7 @@ BEGIN
                    CAST(b.CountryRegionCode AS NVARCHAR(200)),
                    'NULL_BK',
                    'CountryRegionCode is NULL',
-                   'error',
+                   'critical',
                    JSON_OBJECT('CountryRegionCode': b.CountryRegionCode,
                                'Name':              b.Name,
                                'ModifiedDate':      b.ModifiedDate
@@ -157,7 +168,7 @@ BEGIN
             WHERE b.CountryRegionCode IS NULL;
 
             ---------------------------------------------------------
-            -- RULE 2: Duplicate CountryRegionCode -> error (blocking)
+            -- RULE 2: Duplicate CountryRegionCode -> critical (row set aside)
             ---------------------------------------------------------
             PRINT '-- Rule 2: Duplicate CountryRegionCode';
 
@@ -167,7 +178,7 @@ BEGIN
                    'Duplicate CountryRegionCode',
                    CAST(b.CountryRegionCode AS NVARCHAR(200)),
                    'Duplicate CountryRegionCode detected: ' + CAST(COUNT(*) AS VARCHAR(10)) + ' rows',
-                   'error'
+                   'critical'
             FROM #b AS b
             GROUP BY b.CountryRegionCode
             HAVING COUNT(*) > 1;
@@ -179,7 +190,7 @@ BEGIN
                    CAST(b.CountryRegionCode AS NVARCHAR(200)),
                    'DUP_BK',
                    'Duplicate CountryRegionCode detected: ' + CAST(d.cnt AS VARCHAR(10)) + ' rows',
-                   'error',
+                   'critical',
                    JSON_OBJECT('CountryRegionCode': b.CountryRegionCode,
                                'Name':              b.Name,
                                'ModifiedDate':      b.ModifiedDate
@@ -194,7 +205,7 @@ BEGIN
                 ON d.CountryRegionCode = b.CountryRegionCode;
 
             ---------------------------------------------------------
-            -- RULE 3: Name NULL or empty -> warning
+            -- RULE 3: Name NULL or empty -> warning (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 3: Name NULL or empty (warning)';
 

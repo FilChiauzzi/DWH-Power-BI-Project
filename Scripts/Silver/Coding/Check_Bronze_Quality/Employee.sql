@@ -24,6 +24,24 @@ Purpose:
     they carry only the key. With a full load Bronze holds only
     the current batch, so every row is checked as before.
 
+    Severity policy (same in every quality check):
+      critical  the row cannot be identified (business key NULL
+                or duplicated): logged AND set aside in
+                etl.rejected, it does not reach Silver;
+      error     the row is identified but a value is wrong:
+                logged, the row goes on to Silver;
+      warning   a value is suspicious but plausible: logged,
+                the row goes on to Silver.
+    Structure screens check that every foreign key points to
+    a row that exists in the Silver parent table (loaded
+    earlier in the run); a missing parent is an error and the
+    Silver load uses the unknown member (-1).
+    Business rule screens (point 5 of subsystem 4) test values
+    against each other: dates in the right order, codes in their
+    allowed range, a customer that is a person or a store.
+    (Kimball, subsystem 4: tag rather than suspend whenever
+    possible.)
+
 SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline,
     before the Silver load of the same object. SSIS passes
@@ -126,7 +144,7 @@ BEGIN
         END
 
         ---------------------------------------------------------
-        -- RULE 1: BusinessEntityID NULL -> error
+        -- RULE 1: BusinessEntityID NULL -> critical (row set aside)
         ---------------------------------------------------------
         PRINT '-- Rule 1: BusinessEntityID NULL';
 
@@ -136,7 +154,7 @@ BEGIN
                'BusinessEntityID NULL',
                NULL,
                'BusinessEntityID is NULL',
-               'error'
+               'critical'
         FROM #b
         WHERE BusinessEntityID IS NULL;
 
@@ -147,7 +165,7 @@ BEGIN
                NULL,
                'NULL_BK',
                'BusinessEntityID is NULL',
-               'error',
+               'critical',
                JSON_OBJECT(
                     'BusinessEntityID': BusinessEntityID,
                     'JobTitle': JobTitle,
@@ -160,7 +178,7 @@ BEGIN
         WHERE BusinessEntityID IS NULL;
 
         ---------------------------------------------------------
-        -- RULE 2: Duplicate BusinessEntityID -> error
+        -- RULE 2: Duplicate BusinessEntityID -> critical (row set aside)
         ---------------------------------------------------------
         PRINT '-- Rule 2: Duplicate BusinessEntityID';
 
@@ -170,7 +188,7 @@ BEGIN
                'Duplicate BusinessEntityID',
                CAST(b.BusinessEntityID AS NVARCHAR(200)),
                'Duplicate BusinessEntityID detected: ' + CAST(COUNT(*) AS VARCHAR(10)) + ' rows',
-               'error'
+               'critical'
         FROM #b AS b
         GROUP BY b.BusinessEntityID
         HAVING COUNT(*) > 1;
@@ -182,7 +200,7 @@ BEGIN
                CAST(b.BusinessEntityID AS NVARCHAR(200)),
                'DUP_BK',
                'Duplicate BusinessEntityID detected: ' + CAST(d.cnt AS VARCHAR(10)) + ' rows',
-               'error',
+               'critical',
                JSON_OBJECT(
                     'BusinessEntityID': b.BusinessEntityID,
                     'JobTitle': b.JobTitle,
@@ -201,7 +219,7 @@ BEGIN
             ON d.BusinessEntityID = b.BusinessEntityID;
 
         ---------------------------------------------------------
-        -- RULE 3: JobTitle NULL -> warning
+        -- RULE 3: JobTitle NULL -> warning (row passes)
         ---------------------------------------------------------
         PRINT '-- Rule 3: JobTitle NULL (warning)';
 
@@ -217,7 +235,7 @@ BEGIN
            OR LTRIM(RTRIM(b.JobTitle)) = '';
 
         ---------------------------------------------------------
-        -- RULE 4: Gender NULL -> warning
+        -- RULE 4: Gender NULL -> warning (row passes)
         ---------------------------------------------------------
         PRINT '-- Rule 4: Gender NULL (warning)';
 
@@ -232,7 +250,7 @@ BEGIN
         WHERE b.Gender IS NULL;
 
         ---------------------------------------------------------
-        -- RULE 5: HireDate NULL -> warning
+        -- RULE 5: HireDate NULL -> warning (row passes)
         ---------------------------------------------------------
         PRINT '-- Rule 5: HireDate NULL (warning)';
 
@@ -247,7 +265,7 @@ BEGIN
         WHERE b.HireDate IS NULL;
 
         ---------------------------------------------------------
-        -- RULE 6: CurrentFlag NULL -> warning
+        -- RULE 6: CurrentFlag NULL -> warning (row passes)
         ---------------------------------------------------------
         PRINT '-- Rule 6: CurrentFlag NULL (warning)';
 
@@ -260,6 +278,41 @@ BEGIN
                'warning'
         FROM #b AS b
         WHERE b.CurrentFlag IS NULL;
+
+
+        ---------------------------------------------------------
+        -- RULE 7: Person not found in Silver -> error (row passes)
+        ---------------------------------------------------------
+        PRINT '-- Rule 7: Person not found (error)';
+
+        INSERT INTO etl.data_quality_log
+            (batch_id, layer, object_name, check_name, record_id, description, severity)
+        SELECT @batch_id, 'bronze', 'employee',
+               'Person not found',
+               CAST(x.BusinessEntityID AS NVARCHAR(200)),
+               CONCAT('BusinessEntityID ', x.BusinessEntityID, ' does not exist in silver.erp_person - Silver uses -1'),
+               'error'
+        FROM #b AS x
+        WHERE x.BusinessEntityID IS NOT NULL                 -- a NULL is not a broken relationship
+          AND NOT EXISTS (SELECT 1
+                          FROM silver.erp_person AS p
+                          WHERE p.person_id = x.BusinessEntityID);
+
+
+        ---------------------------------------------------------
+        -- RULE 8: Hired before 16 -> warning (row passes)
+        ---------------------------------------------------------
+        PRINT '-- Rule 8: Hired before 16 (warning)';
+
+        INSERT INTO etl.data_quality_log
+            (batch_id, layer, object_name, check_name, record_id, description, severity)
+        SELECT @batch_id, 'bronze', 'employee',
+               'Hire age below 16',
+               CAST(x.BusinessEntityID AS NVARCHAR(200)),
+               CONCAT('Hired at ', DATEDIFF(YEAR, x.BirthDate, x.HireDate), ' years old'),
+               'warning'
+        FROM #b AS x
+        WHERE DATEDIFF(YEAR, x.BirthDate, x.HireDate) < 16;
 
         COMMIT TRANSACTION;
 

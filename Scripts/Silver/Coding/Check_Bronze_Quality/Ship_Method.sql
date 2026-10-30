@@ -23,6 +23,17 @@ Purpose:
     they carry only the key. With a full load Bronze holds only
     the current batch, so every row is checked as before.
 
+    Severity policy (same in every quality check):
+      critical  the row cannot be identified (business key NULL
+                or duplicated): logged AND set aside in
+                etl.rejected, it does not reach Silver;
+      error     the row is identified but a value is wrong:
+                logged, the row goes on to Silver;
+      warning   a value is suspicious but plausible: logged,
+                the row goes on to Silver.
+    (Kimball, subsystem 4: tag rather than suspend whenever
+    possible.)
+
 SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline,
     before the Silver load of the same object. SSIS passes
@@ -122,7 +133,7 @@ BEGIN
             END
 
             ---------------------------------------------------------
-            -- RULE 1: ShipMethodID NULL -> error
+            -- RULE 1: ShipMethodID NULL -> critical (row set aside)
             ---------------------------------------------------------
             PRINT '-- Rule 1: ShipMethodID NULL';
 
@@ -132,7 +143,7 @@ BEGIN
                    'ShipMethodID NULL',
                    NULL,
                    'Business key ShipMethodID is NULL',
-                   'error'
+                   'critical'
             FROM #b
             WHERE ShipMethodID IS NULL;
 
@@ -143,7 +154,7 @@ BEGIN
                    NULL,
                    'NULL_BK',
                    'Business key ShipMethodID is NULL',
-                   'error',
+                   'critical',
                    JSON_OBJECT(
                         'ShipMethodID': b.ShipMethodID,
                         'Name': b.Name,
@@ -156,7 +167,7 @@ BEGIN
             WHERE b.ShipMethodID IS NULL;
 
             ---------------------------------------------------------
-            -- RULE 2: Duplicate ShipMethodID -> error
+            -- RULE 2: Duplicate ShipMethodID -> critical (row set aside)
             ---------------------------------------------------------
             PRINT '-- Rule 2: Duplicate ShipMethodID';
 
@@ -166,7 +177,7 @@ BEGIN
                    'Duplicate ShipMethodID',
                    CAST(ShipMethodID AS NVARCHAR(200)),
                    'Duplicate ShipMethodID detected: ' + CAST(COUNT(*) AS VARCHAR(10)) + ' rows',
-                   'error'
+                   'critical'
             FROM #b
             GROUP BY ShipMethodID
             HAVING COUNT(*) > 1;
@@ -178,7 +189,7 @@ BEGIN
                    CAST(b.ShipMethodID AS NVARCHAR(200)),
                    'DUP_BK',
                    'Duplicate ShipMethodID detected: ' + CAST(d.cnt AS VARCHAR(10)) + ' rows',
-                   'error',
+                   'critical',
                    JSON_OBJECT(
                         'ShipMethodID': b.ShipMethodID,
                         'Name': b.Name,
@@ -197,7 +208,7 @@ BEGIN
                 ON d.ShipMethodID = b.ShipMethodID;
 
             ---------------------------------------------------------
-            -- RULE 3: Name NULL or empty -> warning
+            -- RULE 3: Name NULL or empty -> warning (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 3: Name NULL or empty (warning)';
 
@@ -213,7 +224,7 @@ BEGIN
                OR LTRIM(RTRIM(Name)) = '';
 
             ---------------------------------------------------------
-            -- RULE 4: ShipBase NULL -> warning
+            -- RULE 4: ShipBase NULL -> warning (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 4: ShipBase NULL (warning)';
 
@@ -228,7 +239,7 @@ BEGIN
             WHERE ShipBase IS NULL;
 
             ---------------------------------------------------------
-            -- RULE 5: ShipRate NULL -> warning
+            -- RULE 5: ShipRate NULL -> warning (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 5: ShipRate NULL (warning)';
 

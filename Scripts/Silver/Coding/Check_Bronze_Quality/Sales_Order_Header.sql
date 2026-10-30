@@ -9,7 +9,6 @@ Purpose:
     negative amounts, TotalDue mismatch and missing
     mandatory foreign keys (CustomerID, ShipMethodID).
 
-
     Blocking errors quarantine the row; non-blocking
     warnings are only logged.
 
@@ -25,6 +24,24 @@ Purpose:
     Silver load), deleted rows (dwh_operation = 'D') excluded:
     they carry only the key. With a full load Bronze holds only
     the current batch, so every row is checked as before.
+
+    Severity policy (same in every quality check):
+      critical  the row cannot be identified (business key NULL
+                or duplicated): logged AND set aside in
+                etl.rejected, it does not reach Silver;
+      error     the row is identified but a value is wrong:
+                logged, the row goes on to Silver;
+      warning   a value is suspicious but plausible: logged,
+                the row goes on to Silver.
+    Structure screens check that every foreign key points to
+    a row that exists in the Silver parent table (loaded
+    earlier in the run); a missing parent is an error and the
+    Silver load uses the unknown member (-1).
+    Business rule screens (point 5 of subsystem 4) test values
+    against each other: dates in the right order, codes in their
+    allowed range, a customer that is a person or a store.
+    (Kimball, subsystem 4: tag rather than suspend whenever
+    possible.)
 
 SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline,
@@ -125,7 +142,7 @@ BEGIN
             END
 
             ---------------------------------------------------------
-            -- RULE 1: SalesOrderID NULL -> error (blocking)
+            -- RULE 1: SalesOrderID NULL -> critical (row set aside)
             ---------------------------------------------------------
             PRINT '-- Rule 1: SalesOrderID NULL';
 
@@ -135,7 +152,7 @@ BEGIN
                    'SalesOrderID NULL',
                    CAST(b.SalesOrderID AS NVARCHAR(200)),
                    'SalesOrderID is NULL',
-                   'error'
+                   'critical'
             FROM #b AS b
             WHERE b.SalesOrderID IS NULL;
 
@@ -146,7 +163,7 @@ BEGIN
                    CAST(b.SalesOrderID AS NVARCHAR(200)),
                    'NULL_BK',
                    'SalesOrderID is NULL',
-                   'error',
+                   'critical',
                     JSON_OBJECT(
                         'SalesOrderID': b.SalesOrderID,
                         'RevisionNumber': b.RevisionNumber,
@@ -183,7 +200,7 @@ BEGIN
             WHERE b.SalesOrderID IS NULL;
 
             ---------------------------------------------------------
-            -- RULE 2: Duplicate SalesOrderID -> error (blocking)
+            -- RULE 2: Duplicate SalesOrderID -> critical (row set aside)
             ---------------------------------------------------------
             PRINT '-- Rule 2: Duplicate SalesOrderID';
 
@@ -193,7 +210,7 @@ BEGIN
                    'Duplicate SalesOrderID',
                    CAST(b.SalesOrderID AS NVARCHAR(200)),
                    'Duplicate SalesOrderID detected: ' + CAST(COUNT(*) AS VARCHAR(10)) + ' rows',
-                   'error'
+                   'critical'
             FROM #b AS b
             GROUP BY b.SalesOrderID
             HAVING COUNT(*) > 1;
@@ -205,7 +222,7 @@ BEGIN
                    CAST(b.SalesOrderID AS NVARCHAR(200)),
                    'DUP_BK',
                    'Duplicate SalesOrderID detected: ' + CAST(d.cnt AS VARCHAR(10)) + ' rows',
-                   'error',
+                   'critical',
                     JSON_OBJECT(
                         'SalesOrderID': b.SalesOrderID,
                         'RevisionNumber': b.RevisionNumber,
@@ -248,7 +265,7 @@ BEGIN
                 ON d.SalesOrderID = b.SalesOrderID;
 
             ---------------------------------------------------------
-            -- RULE 3: OrderDate NULL -> error
+            -- RULE 3: OrderDate NULL -> error (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 3: OrderDate NULL';
 
@@ -263,7 +280,7 @@ BEGIN
             WHERE b.OrderDate IS NULL;
 
             ---------------------------------------------------------
-            -- RULE 4: DueDate < OrderDate -> error
+            -- RULE 4: DueDate < OrderDate -> error (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 4: DueDate < OrderDate';
 
@@ -278,7 +295,7 @@ BEGIN
             WHERE b.DueDate < b.OrderDate;
 
             ---------------------------------------------------------
-            -- RULE 5: ShipDate < OrderDate -> error
+            -- RULE 5: ShipDate < OrderDate -> error (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 5: ShipDate < OrderDate';
 
@@ -294,7 +311,7 @@ BEGIN
               AND b.ShipDate < b.OrderDate;
 
             ---------------------------------------------------------
-            -- RULE 6: ModifiedDate < OrderDate -> error
+            -- RULE 6: ModifiedDate < OrderDate -> error (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 6: ModifiedDate < OrderDate';
 
@@ -309,7 +326,7 @@ BEGIN
             WHERE b.ModifiedDate < b.OrderDate;
 
             ---------------------------------------------------------
-            -- RULE 7: Numeric fields < 0 -> error
+            -- RULE 7: Numeric fields < 0 -> error (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 7: Numeric fields < 0';
 
@@ -326,7 +343,7 @@ BEGIN
                OR b.Freight < 0;
 
             ---------------------------------------------------------
-            -- RULE 8: TotalDue mismatch -> error
+            -- RULE 8: TotalDue mismatch -> error (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 8: TotalDue mismatch';
 
@@ -341,7 +358,7 @@ BEGIN
             WHERE b.TotalDue <> (b.SubTotal + b.TaxAmt + b.Freight);
 
             ---------------------------------------------------------
-            -- RULE 9: CustomerID NULL -> error
+            -- RULE 9: CustomerID NULL -> error (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 9: CustomerID NULL';
 
@@ -356,7 +373,7 @@ BEGIN
             WHERE b.CustomerID IS NULL;
 
             ---------------------------------------------------------
-            -- RULE 10: ShipMethodID NULL -> error
+            -- RULE 10: ShipMethodID NULL -> error (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 10: ShipMethodID NULL';
 
@@ -369,6 +386,110 @@ BEGIN
                    'error'
             FROM #b AS b
             WHERE b.ShipMethodID IS NULL;
+
+
+            ---------------------------------------------------------
+            -- RULE 11: Customer not found in Silver -> error (row passes)
+            ---------------------------------------------------------
+            PRINT '-- Rule 11: Customer not found (error)';
+
+            INSERT INTO etl.data_quality_log
+                (batch_id, layer, object_name, check_name, record_id, description, severity)
+            SELECT @batch_id, 'bronze', 'sales_order_header',
+                   'Customer not found',
+                   CAST(x.SalesOrderID AS NVARCHAR(200)),
+                   CONCAT('CustomerID ', x.CustomerID, ' does not exist in silver.erp_customer - Silver uses -1'),
+                   'error'
+            FROM #b AS x
+            WHERE x.CustomerID IS NOT NULL                 -- a NULL is not a broken relationship
+              AND NOT EXISTS (SELECT 1
+                              FROM silver.erp_customer AS p
+                              WHERE p.customer_id = x.CustomerID);
+
+            ---------------------------------------------------------
+            -- RULE 12: Sales person not found in Silver -> error (row passes)
+            ---------------------------------------------------------
+            PRINT '-- Rule 12: Sales person not found (error)';
+
+            INSERT INTO etl.data_quality_log
+                (batch_id, layer, object_name, check_name, record_id, description, severity)
+            SELECT @batch_id, 'bronze', 'sales_order_header',
+                   'Sales person not found',
+                   CAST(x.SalesOrderID AS NVARCHAR(200)),
+                   CONCAT('SalesPersonID ', x.SalesPersonID, ' does not exist in silver.erp_sales_person - Silver uses -1'),
+                   'error'
+            FROM #b AS x
+            WHERE x.SalesPersonID IS NOT NULL                 -- a NULL is not a broken relationship
+              AND NOT EXISTS (SELECT 1
+                              FROM silver.erp_sales_person AS p
+                              WHERE p.person_id = x.SalesPersonID);
+
+            ---------------------------------------------------------
+            -- RULE 13: Territory not found in Silver -> error (row passes)
+            ---------------------------------------------------------
+            PRINT '-- Rule 13: Territory not found (error)';
+
+            INSERT INTO etl.data_quality_log
+                (batch_id, layer, object_name, check_name, record_id, description, severity)
+            SELECT @batch_id, 'bronze', 'sales_order_header',
+                   'Territory not found',
+                   CAST(x.SalesOrderID AS NVARCHAR(200)),
+                   CONCAT('TerritoryID ', x.TerritoryID, ' does not exist in silver.erp_sales_territory - Silver uses -1'),
+                   'error'
+            FROM #b AS x
+            WHERE x.TerritoryID IS NOT NULL                 -- a NULL is not a broken relationship
+              AND NOT EXISTS (SELECT 1
+                              FROM silver.erp_sales_territory AS p
+                              WHERE p.territory_id = x.TerritoryID);
+
+            ---------------------------------------------------------
+            -- RULE 14: Ship method not found in Silver -> error (row passes)
+            ---------------------------------------------------------
+            PRINT '-- Rule 14: Ship method not found (error)';
+
+            INSERT INTO etl.data_quality_log
+                (batch_id, layer, object_name, check_name, record_id, description, severity)
+            SELECT @batch_id, 'bronze', 'sales_order_header',
+                   'Ship method not found',
+                   CAST(x.SalesOrderID AS NVARCHAR(200)),
+                   CONCAT('ShipMethodID ', x.ShipMethodID, ' does not exist in silver.erp_ship_method - Silver uses -1'),
+                   'error'
+            FROM #b AS x
+            WHERE x.ShipMethodID IS NOT NULL                 -- a NULL is not a broken relationship
+              AND NOT EXISTS (SELECT 1
+                              FROM silver.erp_ship_method AS p
+                              WHERE p.ship_method_id = x.ShipMethodID);
+
+
+            ---------------------------------------------------------
+            -- RULE 15: Status outside 1-6 -> error (row passes)
+            ---------------------------------------------------------
+            PRINT '-- Rule 15: Status outside 1-6 (error)';
+
+            INSERT INTO etl.data_quality_log
+                (batch_id, layer, object_name, check_name, record_id, description, severity)
+            SELECT @batch_id, 'bronze', 'sales_order_header',
+                   'Status invalid',
+                   CAST(x.SalesOrderID AS NVARCHAR(200)),
+                   CONCAT('Status ', x.Status, ' is not between 1 and 6'),
+                   'error'
+            FROM #b AS x
+            WHERE x.Status NOT BETWEEN 1 AND 6;
+
+            ---------------------------------------------------------
+            -- RULE 16: OrderDate in the future -> error (row passes)
+            ---------------------------------------------------------
+            PRINT '-- Rule 16: OrderDate in the future (error)';
+
+            INSERT INTO etl.data_quality_log
+                (batch_id, layer, object_name, check_name, record_id, description, severity)
+            SELECT @batch_id, 'bronze', 'sales_order_header',
+                   'OrderDate in the future',
+                   CAST(x.SalesOrderID AS NVARCHAR(200)),
+                   CONCAT('OrderDate ', CONVERT(VARCHAR(10), x.OrderDate, 23), ' is after today'),
+                   'error'
+            FROM #b AS x
+            WHERE x.OrderDate > SYSDATETIME();
 
         COMMIT TRANSACTION;
 

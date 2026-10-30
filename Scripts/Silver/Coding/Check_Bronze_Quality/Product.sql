@@ -24,6 +24,24 @@ Purpose:
     they carry only the key. With a full load Bronze holds only
     the current batch, so every row is checked as before.
 
+    Severity policy (same in every quality check):
+      critical  the row cannot be identified (business key NULL
+                or duplicated): logged AND set aside in
+                etl.rejected, it does not reach Silver;
+      error     the row is identified but a value is wrong:
+                logged, the row goes on to Silver;
+      warning   a value is suspicious but plausible: logged,
+                the row goes on to Silver.
+    Structure screens check that every foreign key points to
+    a row that exists in the Silver parent table (loaded
+    earlier in the run); a missing parent is an error and the
+    Silver load uses the unknown member (-1).
+    Business rule screens (point 5 of subsystem 4) test values
+    against each other: dates in the right order, codes in their
+    allowed range, a customer that is a person or a store.
+    (Kimball, subsystem 4: tag rather than suspend whenever
+    possible.)
+
 SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline,
     before the Silver load of the same object. SSIS passes
@@ -114,6 +132,18 @@ BEGIN
         SELECT @rows_checked = COUNT(*)
         FROM #b;
 
+        ---------------------------------------------------------
+        -- RULE 0: source empty -> warning
+        ---------------------------------------------------------
+        IF @rows_checked = 0
+        BEGIN
+            INSERT INTO etl.data_quality_log
+                (batch_id, layer, object_name, check_name, record_id, description, severity)
+            VALUES
+                (@batch_id, 'bronze', 'product', 'Source empty', NULL,
+                 'No Bronze rows to check: nothing new, or only deletions', 'warning');
+        END
+
         IF @rows_checked = 0
         BEGIN
             INSERT INTO etl.data_quality_log
@@ -124,7 +154,7 @@ BEGIN
         END
 
         ---------------------------------------------------------
-        -- RULE 1: ProductID NULL (critical)
+        -- RULE 1: ProductID NULL -> critical (row set aside)
         ---------------------------------------------------------
         INSERT INTO etl.data_quality_log
             (batch_id, layer, object_name, check_name, record_id, description, severity)
@@ -153,7 +183,7 @@ BEGIN
         WHERE p.ProductID IS NULL;
 
         ---------------------------------------------------------
-        -- RULE 2: Duplicate ProductID (critical)
+        -- RULE 2: Duplicate ProductID -> critical (row set aside)
         ---------------------------------------------------------
         INSERT INTO etl.data_quality_log
             (batch_id, layer, object_name, check_name, record_id, description, severity)
@@ -189,7 +219,7 @@ BEGIN
             ON d.ProductID = p.ProductID;
 
         ---------------------------------------------------------
-        -- RULE 3: Name NULL or empty (error)
+        -- RULE 3: Name NULL or empty -> error (row passes)
         ---------------------------------------------------------
         INSERT INTO etl.data_quality_log
             (batch_id, layer, object_name, check_name, record_id, description, severity)
@@ -203,7 +233,7 @@ BEGIN
            OR LTRIM(RTRIM(p.Name)) = '';
 
         ---------------------------------------------------------
-        -- RULE 4: ProductNumber NULL or empty (error)
+        -- RULE 4: ProductNumber NULL or empty -> error (row passes)
         ---------------------------------------------------------
         INSERT INTO etl.data_quality_log
             (batch_id, layer, object_name, check_name, record_id, description, severity)
@@ -217,7 +247,7 @@ BEGIN
            OR LTRIM(RTRIM(p.ProductNumber)) = '';
 
         ---------------------------------------------------------
-        -- RULE 5: SellStartDate NULL (error)
+        -- RULE 5: SellStartDate NULL -> error (row passes)
         ---------------------------------------------------------
         INSERT INTO etl.data_quality_log
             (batch_id, layer, object_name, check_name, record_id, description, severity)
@@ -229,21 +259,9 @@ BEGIN
         FROM #b AS p
         WHERE p.SellStartDate IS NULL;
 
-        ---------------------------------------------------------
-        -- RULE 6: ProductSubcategoryID NULL (error)
-        ---------------------------------------------------------
-        INSERT INTO etl.data_quality_log
-            (batch_id, layer, object_name, check_name, record_id, description, severity)
-        SELECT @batch_id, 'bronze', 'product',
-               'SubCategoryID NULL',
-               CAST(p.ProductID AS NVARCHAR(200)),
-               'ProductSubcategoryID is NULL',
-               'error'
-        FROM #b AS p
-        WHERE p.ProductSubcategoryID IS NULL;
 
         ---------------------------------------------------------
-        -- RULE 7: Numeric fields NULL or negative (error)
+        -- RULE 6: Numeric fields NULL or negative -> error (row passes)
         ---------------------------------------------------------
         INSERT INTO etl.data_quality_log
             (batch_id, layer, object_name, check_name, record_id, description, severity)
@@ -257,25 +275,25 @@ BEGIN
            OR p.ListPrice < 0 OR p.ListPrice IS NULL
            OR p.SafetyStockLevel < 0 OR p.SafetyStockLevel IS NULL
            OR p.ReorderPoint < 0 OR p.ReorderPoint IS NULL
-           OR p.Weight < 0 OR p.Weight IS NULL
+           OR p.Weight < 0                       -- a NULL weight is normal (no weight)
            OR p.DaysToManufacture < 0 OR p.DaysToManufacture IS NULL;
 
         ---------------------------------------------------------
-        -- RULE 8: UnitMeasureCode NULL (error)
+        -- RULE 7: Weight without unit of measure -> error (row passes)
         ---------------------------------------------------------
         INSERT INTO etl.data_quality_log
             (batch_id, layer, object_name, check_name, record_id, description, severity)
         SELECT @batch_id, 'bronze', 'product',
-               'UnitMeasureCode NULL',
+               'Weight without unit',
                CAST(p.ProductID AS NVARCHAR(200)),
-               'SizeUnitMeasureCode or WeightUnitMeasureCode is NULL',
+               'Weight is filled but WeightUnitMeasureCode is NULL',
                'error'
         FROM #b AS p
-        WHERE p.SizeUnitMeasureCode IS NULL
-           OR p.WeightUnitMeasureCode IS NULL;
+        WHERE p.Weight IS NOT NULL
+           AND p.WeightUnitMeasureCode IS NULL;
 
         ---------------------------------------------------------
-        -- RULE 9: Descriptive fields empty (warning)
+        -- RULE 8: Descriptive fields empty -> warning (row passes)
         ---------------------------------------------------------
         INSERT INTO etl.data_quality_log
             (batch_id, layer, object_name, check_name, record_id, description, severity)
@@ -290,6 +308,56 @@ BEGIN
            OR LTRIM(RTRIM(p.ProductLine)) = ''
            OR LTRIM(RTRIM(p.Class)) = ''
            OR LTRIM(RTRIM(p.Style)) = '';
+
+
+        ---------------------------------------------------------
+        -- RULE 9: Subcategory not found in Silver -> error (row passes)
+        ---------------------------------------------------------
+        PRINT '-- Rule 9: Subcategory not found (error)';
+
+        INSERT INTO etl.data_quality_log
+            (batch_id, layer, object_name, check_name, record_id, description, severity)
+        SELECT @batch_id, 'bronze', 'product',
+               'Subcategory not found',
+               CAST(x.ProductID AS NVARCHAR(200)),
+               CONCAT('ProductSubcategoryID ', x.ProductSubcategoryID, ' does not exist in silver.erp_subcategory - Silver uses -1'),
+               'error'
+        FROM #b AS x
+        WHERE x.ProductSubcategoryID IS NOT NULL                 -- a NULL is not a broken relationship
+          AND NOT EXISTS (SELECT 1
+                          FROM silver.erp_subcategory AS p
+                          WHERE p.subcategory_id = x.ProductSubcategoryID);
+
+
+        ---------------------------------------------------------
+        -- RULE 10: SellEndDate before SellStartDate -> error (row passes)
+        ---------------------------------------------------------
+        PRINT '-- Rule 10: SellEndDate before SellStartDate (error)';
+
+        INSERT INTO etl.data_quality_log
+            (batch_id, layer, object_name, check_name, record_id, description, severity)
+        SELECT @batch_id, 'bronze', 'product',
+               'Sell dates inverted',
+               CAST(x.ProductID AS NVARCHAR(200)),
+               'SellEndDate is before SellStartDate',
+               'error'
+        FROM #b AS x
+        WHERE x.SellEndDate < x.SellStartDate;
+
+        ---------------------------------------------------------
+        -- RULE 11: ListPrice below StandardCost -> warning (row passes)
+        ---------------------------------------------------------
+        PRINT '-- Rule 11: ListPrice below StandardCost (warning)';
+
+        INSERT INTO etl.data_quality_log
+            (batch_id, layer, object_name, check_name, record_id, description, severity)
+        SELECT @batch_id, 'bronze', 'product',
+               'Price below cost',
+               CAST(x.ProductID AS NVARCHAR(200)),
+               CONCAT('ListPrice ', x.ListPrice, ' is below StandardCost ', x.StandardCost),
+               'warning'
+        FROM #b AS x
+        WHERE x.ListPrice > 0 AND x.ListPrice < x.StandardCost;
 
         COMMIT TRANSACTION;
 

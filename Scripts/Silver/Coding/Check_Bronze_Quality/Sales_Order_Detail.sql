@@ -26,6 +26,24 @@ Purpose:
     they carry only the key. With a full load Bronze holds only
     the current batch, so every row is checked as before.
 
+    Severity policy (same in every quality check):
+      critical  the row cannot be identified (business key NULL
+                or duplicated): logged AND set aside in
+                etl.rejected, it does not reach Silver;
+      error     the row is identified but a value is wrong:
+                logged, the row goes on to Silver;
+      warning   a value is suspicious but plausible: logged,
+                the row goes on to Silver.
+    Structure screens check that every foreign key points to
+    a row that exists in the Silver parent table (loaded
+    earlier in the run); a missing parent is an error and the
+    Silver load uses the unknown member (-1).
+    Business rule screens (point 5 of subsystem 4) test values
+    against each other: dates in the right order, codes in their
+    allowed range, a customer that is a person or a store.
+    (Kimball, subsystem 4: tag rather than suspend whenever
+    possible.)
+
 SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline,
     before the Silver load of the same object. SSIS passes
@@ -128,7 +146,7 @@ BEGIN
             END
 
             ---------------------------------------------------------
-            -- RULE 1: SalesOrderID NULL -> error (blocking)
+            -- RULE 1: SalesOrderID NULL -> critical (row set aside)
             ---------------------------------------------------------
             PRINT '-- Rule 1: SalesOrderID NULL';
 
@@ -138,7 +156,7 @@ BEGIN
                    'SalesOrderID NULL',
                    CAST(b.SalesOrderID AS NVARCHAR(200)),
                    'SalesOrderID is NULL',
-                   'error'
+                   'critical'
             FROM #b AS b
             WHERE b.SalesOrderID IS NULL;
 
@@ -149,7 +167,7 @@ BEGIN
                    CAST(b.SalesOrderID AS NVARCHAR(200)),
                    'NULL_BK',
                    'SalesOrderID is NULL',
-                   'error',
+                   'critical',
                    JSON_OBJECT(
                         'SalesOrderID': b.SalesOrderID,
                         'SalesOrderDetailID': b.SalesOrderDetailID,
@@ -171,7 +189,7 @@ BEGIN
             WHERE b.SalesOrderID IS NULL;
 
             ---------------------------------------------------------
-            -- RULE 2: SalesOrderDetailID NULL -> error (blocking)
+            -- RULE 2: SalesOrderDetailID NULL -> critical (row set aside)
             ---------------------------------------------------------
             PRINT '-- Rule 2: SalesOrderDetailID NULL';
 
@@ -181,7 +199,7 @@ BEGIN
                    'SalesOrderDetailID NULL',
                    CONCAT(b.SalesOrderID, '-', b.SalesOrderDetailID),
                    'SalesOrderDetailID is NULL',
-                   'error'
+                   'critical'
             FROM #b AS b
             WHERE b.SalesOrderDetailID IS NULL;
 
@@ -189,10 +207,10 @@ BEGIN
                 (batch_id, layer, object_name, business_key, rule_code,
                  rule_description, severity, raw_row)
             SELECT @batch_id, 'bronze', 'sales_order_detail',
-                   CONCAT(b.SalesOrderID, '-', b.SalesOrderDetailID),
                    'NULL_LINE',
+                   CONCAT(b.SalesOrderID, '-', b.SalesOrderDetailID),
                    'SalesOrderDetailID is NULL',
-                   'error',
+                   'critical',
                    JSON_OBJECT(
                         'SalesOrderID': b.SalesOrderID,
                         'SalesOrderDetailID': b.SalesOrderDetailID,
@@ -214,17 +232,17 @@ BEGIN
             WHERE b.SalesOrderDetailID IS NULL;
 
             ---------------------------------------------------------
-            -- RULE 3: Duplicate (SalesOrderID, SalesOrderDetailID)
+            -- RULE 3: Duplicate (SalesOrderID, SalesOrderDetailID) -> critical (row set aside)
             ---------------------------------------------------------
             PRINT '-- Rule 3: Duplicate SalesOrderID + SalesOrderDetailID';
 
             INSERT INTO etl.data_quality_log
                 (batch_id, layer, object_name, check_name, record_id, description, severity)
             SELECT @batch_id, 'bronze', 'sales_order_detail',
-                   CONCAT(b.SalesOrderID, '-', b.SalesOrderDetailID),
                    'Duplicate line',
+                   CONCAT(b.SalesOrderID, '-', b.SalesOrderDetailID),
                    'Duplicate SalesOrderID + SalesOrderDetailID',
-                   'error'
+                   'critical'
             FROM (
                 SELECT SalesOrderID, SalesOrderDetailID
                 FROM #b
@@ -239,10 +257,10 @@ BEGIN
                 (batch_id, layer, object_name, business_key, rule_code,
                  rule_description, severity, raw_row)
             SELECT @batch_id, 'bronze', 'sales_order_detail',
-                   CONCAT(b.SalesOrderID, '-', b.SalesOrderDetailID),
                    'DUP_LINE',
+                   CONCAT(b.SalesOrderID, '-', b.SalesOrderDetailID),
                    'Duplicate SalesOrderID + SalesOrderDetailID',
-                   'error',
+                   'critical',
                    JSON_OBJECT(
                         'SalesOrderID': b.SalesOrderID,
                         'SalesOrderDetailID': b.SalesOrderDetailID,
@@ -271,95 +289,46 @@ BEGIN
                AND b.SalesOrderDetailID = d.SalesOrderDetailID;
 
             ---------------------------------------------------------
-            -- RULE 4: OrderQty <= 0 -> error
+            -- RULE 4: OrderQty <= 0 -> error (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 4: OrderQty <= 0';
 
             INSERT INTO etl.data_quality_log
                 (batch_id, layer, object_name, check_name, record_id, description, severity)
             SELECT @batch_id, 'bronze', 'sales_order_detail',
-                   CONCAT(b.SalesOrderID, '-', b.SalesOrderDetailID),
                    'OrderQty invalid',
+                   CONCAT(b.SalesOrderID, '-', b.SalesOrderDetailID),
                    'OrderQty <= 0',
                    'error'
             FROM #b b
             WHERE b.OrderQty <= 0;
 
-            INSERT INTO etl.rejected
-                (batch_id, layer, object_name, business_key, rule_code,
-                 rule_description, severity, raw_row)
-            SELECT @batch_id, 'bronze', 'sales_order_detail',
-                   CONCAT(b.SalesOrderID, '-', b.SalesOrderDetailID),
-                   'QTY_INVALID',
-                   'OrderQty <= 0',
-                   'error',
-                   JSON_OBJECT(
-                        'SalesOrderID': b.SalesOrderID,
-                        'SalesOrderDetailID': b.SalesOrderDetailID,
-                        'OrderQty': b.OrderQty,
-                        'ProductID': b.ProductID,
-                        'UnitPrice': b.UnitPrice,
-                        'UnitPriceDiscount': b.UnitPriceDiscount,
-                        'LineTotal': b.LineTotal,
-                        'ModifiedDate': b.ModifiedDate,
-                        'dwh_load_date': b.dwh_load_date,
-                        'dwh_batch_id': b.dwh_batch_id,
-                        'dwh_source_row_num': b.dwh_source_row_num
-                        NULL ON NULL
-                   )
-            FROM #b b
-            WHERE b.OrderQty <= 0;
-
             ---------------------------------------------------------
-            -- RULE 5: UnitPrice < 0 OR UnitPriceDiscount < 0
+            -- RULE 5: UnitPrice < 0 OR UnitPriceDiscount < 0 -> error (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 5: Negative prices';
 
             INSERT INTO etl.data_quality_log
                 (batch_id, layer, object_name, check_name, record_id, description, severity)
             SELECT @batch_id, 'bronze', 'sales_order_detail',
-                   CONCAT(b.SalesOrderID, '-', b.SalesOrderDetailID),
                    'Negative price',
+                   CONCAT(b.SalesOrderID, '-', b.SalesOrderDetailID),
                    'UnitPrice or UnitPriceDiscount < 0',
                    'error'
             FROM #b b
             WHERE b.UnitPrice < 0
                OR b.UnitPriceDiscount < 0;
 
-            INSERT INTO etl.rejected
-                (batch_id, layer, object_name, business_key, rule_code,
-                 rule_description, severity, raw_row)
-            SELECT @batch_id, 'bronze', 'sales_order_detail',
-                   CONCAT(b.SalesOrderID, '-', b.SalesOrderDetailID),
-                   'NEG_PRICE',
-                   'UnitPrice or UnitPriceDiscount < 0',
-                   'error',
-                   JSON_OBJECT(
-                        'SalesOrderID': b.SalesOrderID,
-                        'SalesOrderDetailID': b.SalesOrderDetailID,
-                        'UnitPrice': b.UnitPrice,
-                        'UnitPriceDiscount': b.UnitPriceDiscount,
-                        'LineTotal': b.LineTotal,
-                        'ModifiedDate': b.ModifiedDate,
-                        'dwh_load_date': b.dwh_load_date,
-                        'dwh_batch_id': b.dwh_batch_id,
-                        'dwh_source_row_num': b.dwh_source_row_num
-                        NULL ON NULL
-                   )
-            FROM #b b
-            WHERE b.UnitPrice < 0
-               OR b.UnitPriceDiscount < 0;
-
             ---------------------------------------------------------
-            -- RULE 6: LineTotal mismatch
+            -- RULE 6: LineTotal mismatch -> error (row passes)
             ---------------------------------------------------------
             PRINT '-- Rule 6: LineTotal mismatch';
 
             INSERT INTO etl.data_quality_log
                 (batch_id, layer, object_name, check_name, record_id, description, severity)
             SELECT @batch_id, 'bronze', 'sales_order_detail',
-                   CONCAT(b.SalesOrderID, '-', b.SalesOrderDetailID),
                    'LineTotal mismatch',
+                   CONCAT(b.SalesOrderID, '-', b.SalesOrderDetailID),
                    'LineTotal <> UnitPrice * (1 - UnitPriceDiscount) * OrderQty (tolerance 0.01)',
                    'error'
             FROM #b b
@@ -368,32 +337,58 @@ BEGIN
                       * (1 - CAST(b.UnitPriceDiscount AS DECIMAL(9,4)))
                       * b.OrderQty) > 0.01;
 
-            INSERT INTO etl.rejected
-                (batch_id, layer, object_name, business_key, rule_code,
-                 rule_description, severity, raw_row)
+
+            ---------------------------------------------------------
+            -- RULE 7: Order header not found in Silver -> error (row passes)
+            ---------------------------------------------------------
+            PRINT '-- Rule 7: Order header not found (error)';
+
+            INSERT INTO etl.data_quality_log
+                (batch_id, layer, object_name, check_name, record_id, description, severity)
             SELECT @batch_id, 'bronze', 'sales_order_detail',
-                   CONCAT(b.SalesOrderID, '-', b.SalesOrderDetailID),
-                   'LINE_MISMATCH',
-                   'LineTotal <> UnitPrice * (1 - UnitPriceDiscount) * OrderQty (tolerance 0.01)',
-                   'error',
-                   JSON_OBJECT(
-                        'SalesOrderID': b.SalesOrderID,
-                        'SalesOrderDetailID': b.SalesOrderDetailID,
-                        'OrderQty': b.OrderQty,
-                        'UnitPrice': b.UnitPrice,
-                        'UnitPriceDiscount': b.UnitPriceDiscount,
-                        'LineTotal': b.LineTotal,
-                        'ModifiedDate': b.ModifiedDate,
-                        'dwh_load_date': b.dwh_load_date,
-                        'dwh_batch_id': b.dwh_batch_id,
-                        'dwh_source_row_num': b.dwh_source_row_num
-                        NULL ON NULL
-                   )
-            FROM #b b
-            WHERE ABS(b.LineTotal
-                      - CAST(b.UnitPrice AS DECIMAL(19,4))
-                      * (1 - CAST(b.UnitPriceDiscount AS DECIMAL(9,4)))
-                      * b.OrderQty) > 0.01;
+                   'Order header not found',
+                   CONCAT(x.SalesOrderID, '-', x.SalesOrderDetailID),
+                   CONCAT('SalesOrderID ', x.SalesOrderID, ' does not exist in silver.erp_sales_order_header - Silver uses -1'),
+                   'error'
+            FROM #b AS x
+            WHERE x.SalesOrderID IS NOT NULL                 -- a NULL is not a broken relationship
+              AND NOT EXISTS (SELECT 1
+                              FROM silver.erp_sales_order_header AS p
+                              WHERE p.sales_order_id = x.SalesOrderID);
+
+            ---------------------------------------------------------
+            -- RULE 8: Product not found in Silver -> error (row passes)
+            ---------------------------------------------------------
+            PRINT '-- Rule 8: Product not found (error)';
+
+            INSERT INTO etl.data_quality_log
+                (batch_id, layer, object_name, check_name, record_id, description, severity)
+            SELECT @batch_id, 'bronze', 'sales_order_detail',
+                   'Product not found',
+                   CONCAT(x.SalesOrderID, '-', x.SalesOrderDetailID),
+                   CONCAT('ProductID ', x.ProductID, ' does not exist in silver.erp_product - Silver uses -1'),
+                   'error'
+            FROM #b AS x
+            WHERE x.ProductID IS NOT NULL                 -- a NULL is not a broken relationship
+              AND NOT EXISTS (SELECT 1
+                              FROM silver.erp_product AS p
+                              WHERE p.product_id = x.ProductID);
+
+
+            ---------------------------------------------------------
+            -- RULE 9: UnitPriceDiscount above 100% -> error (row passes)
+            ---------------------------------------------------------
+            PRINT '-- Rule 9: UnitPriceDiscount above 100% (error)';
+
+            INSERT INTO etl.data_quality_log
+                (batch_id, layer, object_name, check_name, record_id, description, severity)
+            SELECT @batch_id, 'bronze', 'sales_order_detail',
+                   'Discount above 100%',
+                   CONCAT(x.SalesOrderID, '-', x.SalesOrderDetailID),
+                   CONCAT('UnitPriceDiscount ', x.UnitPriceDiscount, ' is above 1 (100%)'),
+                   'error'
+            FROM #b AS x
+            WHERE x.UnitPriceDiscount > 1;
 
         COMMIT TRANSACTION;
 
@@ -468,5 +463,4 @@ BEGIN
         THROW;
     END CATCH
 END;
-
 

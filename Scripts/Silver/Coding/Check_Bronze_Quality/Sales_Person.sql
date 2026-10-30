@@ -24,6 +24,21 @@ Purpose:
     they carry only the key. With a full load Bronze holds only
     the current batch, so every row is checked as before.
 
+    Severity policy (same in every quality check):
+      critical  the row cannot be identified (business key NULL
+                or duplicated): logged AND set aside in
+                etl.rejected, it does not reach Silver;
+      error     the row is identified but a value is wrong:
+                logged, the row goes on to Silver;
+      warning   a value is suspicious but plausible: logged,
+                the row goes on to Silver.
+    Structure screens check that every foreign key points to
+    a row that exists in the Silver parent table (loaded
+    earlier in the run); a missing parent is an error and the
+    Silver load uses the unknown member (-1).
+    (Kimball, subsystem 4: tag rather than suspend whenever
+    possible.)
+
 SSIS Usage:
     Executed inside the metadata-driven SSIS pipeline,
     before the Silver load of the same object. SSIS passes
@@ -123,7 +138,7 @@ BEGIN
         END
 
         ---------------------------------------------------------
-        -- RULE 1: BusinessEntityID NULL -> ERROR
+        -- RULE 1: BusinessEntityID NULL -> critical (row set aside)
         ---------------------------------------------------------
         PRINT '-- Rule 1: BusinessEntityID NULL';
 
@@ -133,7 +148,7 @@ BEGIN
                'BusinessEntityID NULL',
                NULL,
                'BusinessEntityID is NULL',
-               'error'
+               'critical'
         FROM #b
         WHERE BusinessEntityID IS NULL;
 
@@ -144,7 +159,7 @@ BEGIN
                NULL,
                'NULL_BK',
                'BusinessEntityID is NULL',
-               'error',
+               'critical',
                JSON_OBJECT(
                     'BusinessEntityID': BusinessEntityID,
                     'TerritoryID': TerritoryID,
@@ -159,7 +174,7 @@ BEGIN
         WHERE BusinessEntityID IS NULL;
 
         ---------------------------------------------------------
-        -- RULE 2: Duplicate BusinessEntityID -> ERROR
+        -- RULE 2: Duplicate BusinessEntityID -> critical (row set aside)
         ---------------------------------------------------------
         PRINT '-- Rule 2: Duplicate BusinessEntityID';
 
@@ -169,7 +184,7 @@ BEGIN
                'Duplicate BusinessEntityID',
                CAST(b.BusinessEntityID AS NVARCHAR(200)),
                'Duplicate BusinessEntityID detected: ' + CAST(COUNT(*) AS VARCHAR(10)) + ' rows',
-               'error'
+               'critical'
         FROM #b b
         GROUP BY b.BusinessEntityID
         HAVING COUNT(*) > 1;
@@ -181,7 +196,7 @@ BEGIN
                CAST(b.BusinessEntityID AS NVARCHAR(200)),
                'DUP_BK',
                'Duplicate BusinessEntityID detected: ' + CAST(d.cnt AS VARCHAR(10)) + ' rows',
-               'error',
+               'critical',
                JSON_OBJECT(
                     'BusinessEntityID': b.BusinessEntityID,
                     'TerritoryID': b.TerritoryID,
@@ -202,7 +217,7 @@ BEGIN
             ON d.BusinessEntityID = b.BusinessEntityID;
 
         ---------------------------------------------------------
-        -- RULE 3: TerritoryID NULL -> WARNING
+        -- RULE 3: TerritoryID NULL -> warning (row passes)
         ---------------------------------------------------------
         PRINT '-- Rule 3: TerritoryID NULL (warning)';
 
@@ -217,7 +232,7 @@ BEGIN
         WHERE b.TerritoryID IS NULL;
 
         ---------------------------------------------------------
-        -- RULE 4: CommissionPct NULL -> WARNING
+        -- RULE 4: CommissionPct NULL -> warning (row passes)
         ---------------------------------------------------------
         PRINT '-- Rule 4: CommissionPct NULL (warning)';
 
@@ -232,7 +247,7 @@ BEGIN
         WHERE b.CommissionPct IS NULL;
 
         ---------------------------------------------------------
-        -- RULE 5: SalesQuota NULL -> WARNING
+        -- RULE 5: SalesQuota NULL -> warning (row passes)
         ---------------------------------------------------------
         PRINT '-- Rule 5: SalesQuota NULL (warning)';
 
@@ -247,7 +262,7 @@ BEGIN
         WHERE b.SalesQuota IS NULL;
 
         ---------------------------------------------------------
-        -- RULE 6: Bonus NULL -> WARNING
+        -- RULE 6: Bonus NULL -> warning (row passes)
         ---------------------------------------------------------
         PRINT '-- Rule 6: Bonus NULL (warning)';
 
@@ -262,7 +277,7 @@ BEGIN
         WHERE b.Bonus IS NULL;
 
         ---------------------------------------------------------
-        -- RULE 7: SalesYTD NULL -> WARNING
+        -- RULE 7: SalesYTD NULL -> warning (row passes)
         ---------------------------------------------------------
         PRINT '-- Rule 7: SalesYTD NULL (warning)';
 
@@ -277,7 +292,7 @@ BEGIN
         WHERE b.SalesYTD IS NULL;
 
         ---------------------------------------------------------
-        -- RULE 8: SalesLastYear NULL -> WARNING
+        -- RULE 8: SalesLastYear NULL -> warning (row passes)
         ---------------------------------------------------------
         PRINT '-- Rule 8: SalesLastYear NULL (warning)';
 
@@ -290,6 +305,43 @@ BEGIN
                'warning'
         FROM #b b
         WHERE b.SalesLastYear IS NULL;
+
+
+        ---------------------------------------------------------
+        -- RULE 9: Employee not found in Silver -> error (row passes)
+        ---------------------------------------------------------
+        PRINT '-- Rule 9: Employee not found (error)';
+
+        INSERT INTO etl.data_quality_log
+            (batch_id, layer, object_name, check_name, record_id, description, severity)
+        SELECT @batch_id, 'bronze', 'sales_person',
+               'Employee not found',
+               CAST(x.BusinessEntityID AS NVARCHAR(200)),
+               CONCAT('BusinessEntityID ', x.BusinessEntityID, ' does not exist in silver.erp_employee - Silver uses -1'),
+               'error'
+        FROM #b AS x
+        WHERE x.BusinessEntityID IS NOT NULL                 -- a NULL is not a broken relationship
+          AND NOT EXISTS (SELECT 1
+                          FROM silver.erp_employee AS p
+                          WHERE p.business_entity_id = x.BusinessEntityID);
+
+        ---------------------------------------------------------
+        -- RULE 10: Territory not found in Silver -> error (row passes)
+        ---------------------------------------------------------
+        PRINT '-- Rule 10: Territory not found (error)';
+
+        INSERT INTO etl.data_quality_log
+            (batch_id, layer, object_name, check_name, record_id, description, severity)
+        SELECT @batch_id, 'bronze', 'sales_person',
+               'Territory not found',
+               CAST(x.BusinessEntityID AS NVARCHAR(200)),
+               CONCAT('TerritoryID ', x.TerritoryID, ' does not exist in silver.erp_sales_territory - Silver uses -1'),
+               'error'
+        FROM #b AS x
+        WHERE x.TerritoryID IS NOT NULL                 -- a NULL is not a broken relationship
+          AND NOT EXISTS (SELECT 1
+                          FROM silver.erp_sales_territory AS p
+                          WHERE p.territory_id = x.TerritoryID);
 
         COMMIT TRANSACTION;
 
