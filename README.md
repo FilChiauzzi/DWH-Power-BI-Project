@@ -33,6 +33,7 @@ This project builds a complete **data warehouse** for sales analysis, from the r
 | Bronze layer (raw data)                | ✅ Done         |
 | Quality checks and quarantine          | ✅ Done: column, structure and business rule screens; only unidentifiable rows are set aside |
 | Error event schema (Kimball)           | ✅ Done: screen dimension, error event fact and detail fact, filled automatically |
+| Audit dimension (Kimball)              | ✅ Done: `gold.dim_audit` tells how every fact row was loaded |
 | Run log (audit of every run and step)  | ✅ Done         |
 | Change Data Capture (incremental loads)| ✅ Done: 11 tables, deletes as soft delete |
 | Silver layer (clean data, history)     | ✅ Done         |

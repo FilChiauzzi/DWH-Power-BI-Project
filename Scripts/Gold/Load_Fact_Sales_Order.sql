@@ -26,6 +26,23 @@ Purpose:
     Every execution is logged in etl.load_audit (layer gold,
     step load): status, duration, row counts and, on
     failure, the error.
+    Audit dimension (Kimball subsystem 6): every fact row gets
+    an audit_key that tells how it was loaded. The flags come
+    from the error event schema (the errors of its Silver
+    header and line, in the batch that loaded them) and from
+    the unknown members used by the row:
+      complete_flag        Incomplete if a dimension key is -1
+      validation_flag      Invalid if a structure screen failed
+      out_of_bounds_flag   Out of bounds if a column or
+                           business rule screen found an error
+      screen_failed_flag   Screen failed if any screen fired
+      record_modified_flag Modified if a warning fired (Silver
+                           repaired the value)
+      overall_quality      Error / Warning / Perfect
+    One gold.dim_audit row per combination of flags in the run.
+    Change @etl_master_version when the ETL code changes, and
+    @allocation_version when the total_due allocation rule
+    changes.
     Soft delete: order lines and orders flagged as deleted in
     Silver (dwh_is_deleted = 1) are excluded before the
     allocation of total_due, so a deleted order or line never
@@ -65,7 +82,9 @@ BEGIN
         @load_ts         DATETIME2(3) = SYSDATETIME(),
         @start_time      DATETIME2(3),
         @end_time        DATETIME2(3),
-        @last_gold_load  DATETIME2(3);
+        @last_gold_load  DATETIME2(3),
+        @etl_master_version VARCHAR(20) = '2.0',   -- version of the ETL code (audit dimension)
+        @allocation_version VARCHAR(20) = '1.0';   -- version of the total_due allocation rule
 
     -- Audit (etl.load_audit): declared before TRY, the CATCH uses them
     DECLARE
@@ -129,6 +148,8 @@ BEGIN
                     d.unit_price,
                     d.unit_price_discount,
                     d.line_total,
+                    h.dwh_batch_id AS header_batch_id,      -- for the audit flags
+                    d.dwh_batch_id AS detail_batch_id,
                     CAST(d.line_total AS DECIMAL(19,4)) AS line_total_4,
                     ROW_NUMBER() OVER (PARTITION BY d.sales_order_id
                                        ORDER BY d.sales_order_detail_id) AS rn,
@@ -173,6 +194,8 @@ BEGIN
                 c.unit_price_discount,
                 c.line_total,
                 c.total_due,
+                c.header_batch_id,
+                c.detail_batch_id,
 
                 HASHBYTES('SHA2_256',
                     CONCAT_WS('|',
@@ -207,9 +230,76 @@ BEGIN
                 THROW 51030, 'Silver source is empty: FULL load stopped to avoid emptying the fact table.', 1;
 
             -----------------------------------------------------
+            -- Audit dimension: the flags of every fact row
+            -----------------------------------------------------
+            -- 1. Errors of the order headers and lines, per record and batch
+            SELECT t.object_name,
+                   x.record_identifier_key,
+                   f.batch_key,
+                   MAX(CASE WHEN s.severity IN ('error', 'critical') THEN 1 ELSE 0 END) AS has_error,
+                   MAX(CASE WHEN s.severity = 'warning' THEN 1 ELSE 0 END)              AS has_warning,
+                   MAX(CASE WHEN s.screen_type = 'structure'
+                             AND s.severity IN ('error', 'critical') THEN 1 ELSE 0 END)  AS has_structure_error,
+                   MAX(CASE WHEN s.screen_type IN ('column', 'business rule')
+                             AND s.severity IN ('error', 'critical') THEN 1 ELSE 0 END)  AS has_bounds_error
+            INTO #row_errors
+            FROM etl.fact_error_event_detail AS x
+            JOIN etl.fact_error_event        AS f ON f.error_event_key = x.error_event_key
+            JOIN etl.dim_screen              AS s ON s.screen_key = f.screen_key
+            JOIN etl.dim_table               AS t ON t.table_key = x.table_key
+            WHERE t.object_name IN ('sales_order_header', 'sales_order_detail')
+              AND x.record_identifier_key IS NOT NULL
+            GROUP BY t.object_name, x.record_identifier_key, f.batch_key;
+
+            -- 2. The flags of each fact row: errors of its line OR of its header
+            SELECT src.sales_order_id, src.sales_order_detail_id,
+                   CASE WHEN ISNULL(el.has_error, 0) = 1 OR ISNULL(eh.has_error, 0) = 1 THEN 'Error'
+                        WHEN ISNULL(el.has_warning, 0) = 1 OR ISNULL(eh.has_warning, 0) = 1
+                          OR -1 IN (src.customer_sk, src.territory_sk, src.product_sk, src.status_id) THEN 'Warning'
+                        ELSE 'Perfect' END                                          AS overall_quality_rating,
+                   CASE WHEN -1 IN (src.customer_sk, src.territory_sk, src.product_sk, src.status_id)
+                        THEN 'Incomplete' ELSE 'Complete' END                       AS complete_flag,
+                   CASE WHEN ISNULL(el.has_structure_error, 0) = 1 OR ISNULL(eh.has_structure_error, 0) = 1
+                        THEN 'Invalid' ELSE 'Valid' END                             AS validation_flag,
+                   CASE WHEN ISNULL(el.has_bounds_error, 0) = 1 OR ISNULL(eh.has_bounds_error, 0) = 1
+                        THEN 'Out of bounds' ELSE 'In bounds' END                   AS out_of_bounds_flag,
+                   CASE WHEN el.record_identifier_key IS NOT NULL OR eh.record_identifier_key IS NOT NULL
+                        THEN 'Screen failed' ELSE 'No screen failed' END            AS screen_failed_flag,
+                   CASE WHEN ISNULL(el.has_warning, 0) = 1 OR ISNULL(eh.has_warning, 0) = 1
+                        THEN 'Modified' ELSE 'Not modified' END                     AS record_modified_flag
+            INTO #row_audit
+            FROM #src_full AS src
+            LEFT JOIN #row_errors AS el
+                   ON el.object_name = 'sales_order_detail'
+                  AND el.record_identifier_key = CONCAT(src.sales_order_id, '-', src.sales_order_detail_id)
+                  AND el.batch_key = src.detail_batch_id
+            LEFT JOIN #row_errors AS eh
+                   ON eh.object_name = 'sales_order_header'
+                  AND eh.record_identifier_key = CAST(src.sales_order_id AS NVARCHAR(200))
+                  AND eh.batch_key = src.header_batch_id;
+
+            -----------------------------------------------------
             -- TRUNCATE + INSERT in one transaction
             -----------------------------------------------------
             BEGIN TRANSACTION;
+
+                -- 3. One audit row per combination of flags met in this run
+                INSERT INTO gold.dim_audit
+                    (batch_id, overall_quality_rating, complete_flag, validation_flag, out_of_bounds_flag,
+                     screen_failed_flag, record_modified_flag, etl_master_version_number, allocation_version_number)
+                SELECT DISTINCT @batch_id, overall_quality_rating, complete_flag, validation_flag, out_of_bounds_flag,
+                       screen_failed_flag, record_modified_flag, @etl_master_version, @allocation_version
+                FROM #row_audit AS r
+                WHERE NOT EXISTS (SELECT 1 FROM gold.dim_audit AS a        -- run again in the same batch: no duplicates
+                                  WHERE a.batch_id                  = @batch_id
+                                    AND a.overall_quality_rating    = r.overall_quality_rating
+                                    AND a.complete_flag             = r.complete_flag
+                                    AND a.validation_flag           = r.validation_flag
+                                    AND a.out_of_bounds_flag        = r.out_of_bounds_flag
+                                    AND a.screen_failed_flag        = r.screen_failed_flag
+                                    AND a.record_modified_flag      = r.record_modified_flag
+                                    AND a.etl_master_version_number = @etl_master_version
+                                    AND a.allocation_version_number = @allocation_version);
 
                 TRUNCATE TABLE gold.fact_sales_order;
 
@@ -234,31 +324,46 @@ BEGIN
                     row_hash,
                     dwh_create_date,
                     dwh_load_date,
-                    dwh_batch_id
+                    dwh_batch_id,
+                    audit_key
                 )
                 SELECT
-                    sales_order_id,
-                    sales_order_detail_id,
-                    order_date,
-                    due_date,
-                    ship_date,
-                    modified_date,
-                    status_id,
-                    online_order_id,
-                    customer_sk,
-                    person_sk,
-                    territory_sk,
-                    product_sk,
-                    order_qty,
-                    unit_price,
-                    unit_price_discount,
-                    line_total,
-                    total_due,
-                    row_hash,
+                    src.sales_order_id,
+                    src.sales_order_detail_id,
+                    src.order_date,
+                    src.due_date,
+                    src.ship_date,
+                    src.modified_date,
+                    src.status_id,
+                    src.online_order_id,
+                    src.customer_sk,
+                    src.person_sk,
+                    src.territory_sk,
+                    src.product_sk,
+                    src.order_qty,
+                    src.unit_price,
+                    src.unit_price_discount,
+                    src.line_total,
+                    src.total_due,
+                    src.row_hash,
                     @load_ts,
                     @load_ts,
-                    @batch_id
-                FROM #src_full;
+                    @batch_id,
+                    a.audit_key
+                FROM #src_full AS src
+                JOIN #row_audit AS r
+                  ON r.sales_order_id        = src.sales_order_id
+                 AND r.sales_order_detail_id = src.sales_order_detail_id
+                JOIN gold.dim_audit AS a                     -- 4. the audit row of the combination
+                  ON a.batch_id                  = @batch_id
+                 AND a.overall_quality_rating    = r.overall_quality_rating
+                 AND a.complete_flag             = r.complete_flag
+                 AND a.validation_flag           = r.validation_flag
+                 AND a.out_of_bounds_flag        = r.out_of_bounds_flag
+                 AND a.screen_failed_flag        = r.screen_failed_flag
+                 AND a.record_modified_flag      = r.record_modified_flag
+                 AND a.etl_master_version_number = @etl_master_version
+                 AND a.allocation_version_number = @allocation_version;
 
                 SET @rows_inserted = @@ROWCOUNT;
 
