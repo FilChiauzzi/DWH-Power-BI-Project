@@ -30,6 +30,8 @@ GO
 SET QUOTED_IDENTIFIER ON;
 GO
 
+IF OBJECT_ID('etl.rejected', 'U') IS NOT NULL
+    DROP TABLE etl.rejected;
 ---------------------------------------------------------
 -- Create Table
 ---------------------------------------------------------
