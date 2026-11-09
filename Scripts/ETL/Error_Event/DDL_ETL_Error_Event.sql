@@ -18,36 +18,30 @@ Purpose:
       etl.fact_error_event_detail  every field of the record
                                    that took part in the error
 
-    Metadata-driven: nothing is written by hand. A screen
-    describes itself (name, type, severity, action, fields)
-    when it writes its errors into #errors; the procedure
-    etl.usp_save_error_events adds to the dimensions every
-    screen, table and field it does not know yet, then writes
-    the facts.
+    Metadata-driven: nothing is written by hand. The
+    dimensions and facts are filled by
+    etl.usp_save_error_events (usp_save_error_events.sql).
 
 SSIS Usage:
-    Not executed by SSIS. The quality checks and the Bronze
-    loads call etl.usp_save_error_events.
+    Not executed by SSIS. Run once at deployment.
 
 Warning:
     Drops and recreates the error event objects: the error
-    history is lost. Run after ETL_Batch.sql.
+    history is lost. Run after DDL_ETL_Batch.sql.
 */
 
 USE [DWH_AdventureWorks2025];
 GO
 
 ---------------------------------------------------------
--- 0. Drop (also the old quality log)
+-- 0. Drop
 ---------------------------------------------------------
 DROP VIEW      IF EXISTS etl.vw_error_event_daily;
-DROP PROCEDURE IF EXISTS etl.usp_save_error_events;
 DROP TABLE     IF EXISTS etl.fact_error_event_detail;
 DROP TABLE     IF EXISTS etl.fact_error_event;
 DROP TABLE     IF EXISTS etl.dim_field;
 DROP TABLE     IF EXISTS etl.dim_screen;
 DROP TABLE     IF EXISTS etl.dim_table;
-DROP TABLE     IF EXISTS etl.data_quality_log;
 GO
 
 ---------------------------------------------------------
@@ -120,101 +114,7 @@ CREATE TABLE etl.fact_error_event_detail (
 GO
 
 ---------------------------------------------------------
--- 3. The procedure that saves the errors of a screen run
----------------------------------------------------------
-/*
-    The caller fills #errors, one row per error found:
-
-    CREATE TABLE #errors (
-        row_id           INT IDENTITY(1,1),
-        screen_name      NVARCHAR(200),  -- 'OrderQty invalid'
-        screen_type      VARCHAR(20),    -- column / structure / business rule
-        severity         VARCHAR(20),    -- critical / error / warning
-        exception_action VARCHAR(20),    -- set aside / pass / halt
-        fields           NVARCHAR(400),  -- 'UnitPrice,OrderQty' ('' = whole record)
-        record_id        NVARCHAR(200),  -- '43659-1'
-        error_condition  NVARCHAR(500)   -- 'OrderQty <= 0'
-    );
-
-    then: EXEC etl.usp_save_error_events @batch_id, @layer, @object_name, @etl_module;
-*/
-CREATE PROCEDURE etl.usp_save_error_events
-    @batch_id    BIGINT,
-    @layer       VARCHAR(10),
-    @object_name VARCHAR(50),
-    @etl_module  NVARCHAR(256)
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    IF NOT EXISTS (SELECT 1 FROM #errors) RETURN;
-
-    DECLARE @now DATETIME2(3) = SYSDATETIME(),
-            @table_key INT;
-
-    -- 1. The table
-    IF NOT EXISTS (SELECT 1 FROM etl.dim_table WHERE object_name = @object_name AND layer = @layer)
-        INSERT INTO etl.dim_table (object_name, layer) VALUES (@object_name, @layer);
-
-    SELECT @table_key = table_key FROM etl.dim_table WHERE object_name = @object_name AND layer = @layer;
-
-    -- 2. The screens: new ones added, known ones updated (the code is the truth)
-    MERGE etl.dim_screen AS d
-    USING (SELECT screen_name, MAX(screen_type) AS screen_type, MAX(severity) AS severity,
-                  MAX(exception_action) AS exception_action, MIN(error_condition) AS definition
-           FROM #errors GROUP BY screen_name) AS s
-       ON d.object_name = @object_name AND d.screen_name = s.screen_name
-    WHEN MATCHED THEN
-        UPDATE SET screen_type = s.screen_type, severity = s.severity,
-                   exception_action = s.exception_action, etl_module = @etl_module
-    WHEN NOT MATCHED THEN
-        INSERT (screen_name, object_name, screen_type, etl_module, screen_processing_definition, severity, exception_action)
-        VALUES (s.screen_name, @object_name, s.screen_type, @etl_module, s.definition, s.severity, s.exception_action);
-
-    -- 3. The fields: one row per field named by a screen
-    SELECT DISTINCT e.row_id, ISNULL(NULLIF(LTRIM(f.value), ''), '(whole record)') AS field_name
-    INTO #error_fields
-    FROM #errors AS e
-    CROSS APPLY STRING_SPLIT(CONCAT(e.fields, ''), ',') AS f;
-
-    INSERT INTO etl.dim_field (table_key, field_name)
-    SELECT DISTINCT @table_key, x.field_name
-    FROM #error_fields AS x
-    WHERE NOT EXISTS (SELECT 1 FROM etl.dim_field AS d WHERE d.table_key = @table_key AND d.field_name = x.field_name);
-
-    -- 4. The error events: one per error
-    DECLARE @map TABLE (row_id INT, error_event_key BIGINT);
-
-    MERGE etl.fact_error_event AS t
-    USING (SELECT e.row_id, s.screen_key,
-                  CASE e.severity WHEN 'critical' THEN 3 WHEN 'error' THEN 2 ELSE 1 END AS severity_score
-           FROM #errors AS e
-           JOIN etl.dim_screen AS s ON s.object_name = @object_name AND s.screen_name = e.screen_name) AS e
-       ON 1 = 0
-    WHEN NOT MATCHED THEN
-        INSERT (error_event_date_key, screen_key, batch_key, error_date_time, severity_score)
-        VALUES (CONVERT(INT, FORMAT(@now, 'yyyyMMdd')), e.screen_key, @batch_id, @now, e.severity_score)
-    OUTPUT e.row_id, inserted.error_event_key INTO @map (row_id, error_event_key);
-
-    -- 5. The details: one per field of each error
-    INSERT INTO etl.fact_error_event_detail
-        (error_event_key, error_event_date_key, screen_key, batch_key, error_date_time,
-         table_key, field_key, record_identifier_key, error_condition)
-    SELECT m.error_event_key, f.error_event_date_key, f.screen_key, f.batch_key, f.error_date_time,
-           @table_key, d.field_key, e.record_id, e.error_condition
-    FROM @map AS m
-    JOIN #errors              AS e ON e.row_id = m.row_id
-    JOIN etl.fact_error_event AS f ON f.error_event_key = m.error_event_key
-    JOIN #error_fields        AS x ON x.row_id = m.row_id
-    JOIN etl.dim_field        AS d ON d.table_key = @table_key AND d.field_name = x.field_name;
-
-    -- The errors are saved: empty the list for the next call
-    TRUNCATE TABLE #errors;
-END;
-GO
-
----------------------------------------------------------
--- 4. Data quality over time
+-- 3. Data quality over time
 ---------------------------------------------------------
 CREATE VIEW etl.vw_error_event_daily
 AS

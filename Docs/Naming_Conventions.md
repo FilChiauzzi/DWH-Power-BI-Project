@@ -340,28 +340,29 @@ Rules:
 
 **Folders**
 
-| Folder                                              | Content                                              |
-|-----------------------------------------------------|------------------------------------------------------|
-| `Scripts/ETL`                                       | Database, schemas, configuration                     |
-| `Scripts/ETL/Audit`                                 | Run log: `etl.batch`, `etl.load_audit` and their procedures |
-| `Scripts/ETL/Error_Event`                           | Quality log and quarantine                           |
-| `Scripts/Bronze`                                    | Bronze tables and the Bronze load                    |
-| `Scripts/Silver/Silver_DDL.sql`                     | Silver tables and sequences                          |
-| `Scripts/Silver/Coding/Check_Bronze_Quality`        | One quality check per entity                         |
-| `Scripts/Silver/Coding/Data_Transformation&Load`    | One Silver load per entity                           |
-| `Scripts/Gold`                                      | Gold tables, dimension views and the fact load       |
+| Folder                       | Content                                              |
+|------------------------------|------------------------------------------------------|
+| `Scripts/ETL`                | Database, schemas, configuration                     |
+| `Scripts/ETL/Audit`          | Run log: `etl.batch`, `etl.load_audit` and their procedures |
+| `Scripts/ETL/CDC`            | Change Data Capture on the source                    |
+| `Scripts/ETL/Error_Event`    | Error event schema and quarantine                    |
+| `Scripts/ETL/Profiling`      | Source profiling                                     |
+| `Scripts/Bronze`             | Bronze tables and the Bronze loads                   |
+| `Scripts/Silver`             | Silver tables and sequences                          |
+| `Scripts/Silver/Data_Quality`| One quality check per entity                         |
+| `Scripts/Silver/Load`        | One Silver load per entity                           |
+| `Scripts/Gold`               | Gold tables, dimension views, calendar and fact load |
 
 **File names**
 
+DDL and stored procedures are always in separate files.
+
 | Kind of script          | Pattern                          | Example                                  |
 |-------------------------|----------------------------------|------------------------------------------|
-| ETL framework           | `ETL_<Object>.sql`               | `ETL_Batch.sql`, `ETL_Load_Audit.sql`, `ETL_Start_Batch.sql`, `ETL_Audit_Procedures.sql` |
-| Layer DDL               | `<Layer>_DDL.sql`                | `Bronze_DDL.sql`, `Silver_DDL.sql`       |
-| Bronze load             | `Load_Bronze.sql`                | `Load_Bronze.sql`                        |
-| Quality check           | `<Entity>.sql`, in `Check_Bronze_Quality` | `Subcategory.sql`               |
-| Silver load             | `Load_Silver_<Entity>.sql`       | `Load_Silver_Sales_Order_Header.sql`     |
-| Gold fact load          | `Load_<Fact>.sql`                | `Load_Fact_Sales_Order.sql`              |
-| Gold dimension view     | `View_Dim_<Entity>.sql`          | `View_Dim_Product.sql`                   |
+| Structure (tables, views, sequences) | `DDL_<Layer or Object>.sql` | `DDL_ETL_Batch.sql`, `DDL_Bronze.sql`, `DDL_Silver.sql`, `DDL_Gold.sql` |
+| Gold dimension view     | `DDL_View_Dim_<Entity>.sql`      | `DDL_View_Dim_Product.sql`               |
+| Stored procedure        | `<procedure name>.sql`, one per file | `usp_load_bronze.sql`, `usp_check_bronze_quality_load_subcategory.sql`, `usp_load_silver_sales_order_header.sql`, `usp_load_gold_fact_sales_order.sql` |
+| Setup on the source     | `<Action>_<Object>.sql`          | `Enable_CDC_Source.sql`                  |
 
 Rules: English only, `Words_Separated_By_Underscores`, no spaces and no special characters (`:` is not allowed in file names on Windows; `&` breaks command lines and URLs), extension `.sql`.
 

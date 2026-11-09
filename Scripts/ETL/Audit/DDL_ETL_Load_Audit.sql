@@ -17,10 +17,10 @@ Purpose:
 
 SSIS Usage:
     Not executed by SSIS. Run once at deployment, after
-    ETL_Batch.sql (the foreign key on batch_id needs it).
+    DDL_ETL_Batch.sql (the foreign key on batch_id needs it).
     The load procedures write into this table through
     etl.usp_audit_start and etl.usp_audit_end
-    (ETL_Audit_Procedures.sql).
+    (usp_audit_start.sql and usp_audit_end.sql).
 
 Warning:
     None. The script never drops anything: it creates the

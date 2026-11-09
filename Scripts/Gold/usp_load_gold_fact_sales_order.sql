@@ -43,6 +43,8 @@ Purpose:
     Change @etl_master_version when the ETL code changes, and
     @allocation_version when the total_due allocation rule
     changes.
+    After the load it rebuilds the calendar
+    (etl.usp_load_gold_calendar).
     Soft delete: order lines and orders flagged as deleted in
     Silver (dwh_is_deleted = 1) are excluded before the
     allocation of total_due, so a deleted order or line never
@@ -368,6 +370,9 @@ BEGIN
                 SET @rows_inserted = @@ROWCOUNT;
 
             COMMIT TRANSACTION;
+
+            -- The calendar follows the fact dates
+            EXEC etl.usp_load_gold_calendar;
 
             DROP TABLE #src_full;
 

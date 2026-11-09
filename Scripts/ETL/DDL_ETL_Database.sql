@@ -8,7 +8,7 @@ Purpose:
     warehouse: bronze, silver and gold for the three layers
     of the Medallion Architecture, and etl for the framework
     tables and procedures. The dwh schema (sequences) is
-    created by Silver_DDL.sql.
+    created by DDL_Silver.sql.
 
 SSIS Usage:
     Not executed by SSIS. Run once at deployment: it is the

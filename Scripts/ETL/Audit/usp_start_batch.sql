@@ -23,7 +23,7 @@ SSIS Usage:
     run. @notes is optional.
 
 Warning:
-    Run ETL_Load_Audit.sql first: this procedure needs the
+    Run DDL_ETL_Load_Audit.sql first: this procedure needs the
     column etl.batch.status and the table etl.load_audit.
     The pipeline must never run twice at the same time: a
     run still in progress would be marked 'aborted' by the

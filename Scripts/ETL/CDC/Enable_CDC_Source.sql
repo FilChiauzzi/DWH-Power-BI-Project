@@ -12,7 +12,7 @@ Purpose:
 
 SSIS Usage:
     Not executed by SSIS. Run once at deployment, after
-    ETL_Config_Table.sql, before the first incremental load.
+    DDL_ETL_Config.sql, before the first incremental load.
 
 Warning:
     Needs sysadmin (database) and db_owner (tables). On a real

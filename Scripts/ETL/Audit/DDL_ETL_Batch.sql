@@ -18,10 +18,8 @@ SSIS Usage:
     event handler), which fills ended_at and status.
 
 Warning:
-    None. The script never drops anything: it creates the
-    table only if it does not exist, and on an existing
-    table it adds the column status only if it is missing.
-    It can be run again safely.
+    None. The table is created only if it does not exist,
+    so the run history is kept.
 */
 
 USE [DWH_AdventureWorks2025];
@@ -33,7 +31,7 @@ SET QUOTED_IDENTIFIER ON;
 GO
 
 ---------------------------------------------------------
--- Create Table (new database)
+-- Create Table (only if it does not exist)
 ---------------------------------------------------------
 IF OBJECT_ID('etl.batch', 'U') IS NULL
 BEGIN
@@ -42,7 +40,7 @@ BEGIN
         [started_at]     DATETIME2(3) NOT NULL            -- start timestamp
             DEFAULT(sysdatetime()),
         [ended_at]       DATETIME2(3) NULL,               -- end timestamp
-        [triggered_by]   NVARCHAR(100) NULL,              -- user or agent
+        [triggered_by]   NVARCHAR(128) NULL,              -- login: SUSER_SNAME() returns up to 128 chars
         [notes]          NVARCHAR(500) NULL,              -- optional notes
         [status]         VARCHAR(20) NOT NULL             -- running / succeeded / failed / aborted
             CONSTRAINT DF_etl_batch_status DEFAULT ('running'),
@@ -51,33 +49,6 @@ BEGIN
         ),
         CONSTRAINT CK_etl_batch_status
             CHECK ([status] IN ('running', 'succeeded', 'failed', 'aborted'))
-    ) ON [PRIMARY];
-END
-GO
-
----------------------------------------------------------
--- Existing table created before the column status
--- (database already deployed): add it once
----------------------------------------------------------
-IF COL_LENGTH('etl.batch', 'status') IS NULL
-BEGIN
-    ALTER TABLE etl.batch
-        ADD [status] VARCHAR(20) NOT NULL
-            CONSTRAINT DF_etl_batch_status DEFAULT ('running');
-
-    -- Runs created before this column existed were never
-    -- closed: their outcome is unknown, so they are 'aborted'.
-    -- Dynamic SQL: the new column is visible only after the
-    -- ALTER has run, not when this batch is compiled.
-    EXEC sp_executesql
-        N'UPDATE etl.batch SET [status] = ''aborted'' WHERE ended_at IS NULL;';
-END
-GO
-
-IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_etl_batch_status')
-BEGIN
-    ALTER TABLE etl.batch
-        ADD CONSTRAINT CK_etl_batch_status
-            CHECK ([status] IN ('running', 'succeeded', 'failed', 'aborted'));
+    );
 END
 GO

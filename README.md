@@ -171,8 +171,10 @@ Release 1 delivers the full path from the source to the star schema. The next re
 │   │   ├── Error_Event/  Error event schema and quarantine
 │   │   └── Profiling/    Source profiling
 │   ├── Bronze/    Raw tables and the generic Bronze load
-│   ├── Silver/    Clean tables, quality checks and Silver loads
-│   └── Gold/      Fact table, dimensions and Gold load
+│   ├── Silver/    Clean tables
+│   │   ├── Data_Quality/ One quality check per entity
+│   │   └── Load/         One Silver load per entity
+│   └── Gold/      Fact table, audit dimension, calendar, dimension views and Gold load
 └── README.md
 ```
 
@@ -182,24 +184,14 @@ Release 1 delivers the full path from the source to the star schema. The next re
 
 ## 🛠 How to run the scripts
 
-Run them in this order, on SQL Server with the `AdventureWorks2025` database available:
+The scripts are of two kinds, always in separate files:
 
-| Order | Script                                                   | What it does                                          |
-|------:|----------------------------------------------------------|-------------------------------------------------------|
-| 1     | `Scripts/ETL/ETL_Init_Database.sql`                      | Creates the database and the schemas                  |
-| 2     | `Scripts/ETL/ETL_Config_Table.sql`                       | Creates the configuration table                       |
-| 2b    | `Scripts/ETL/CDC/Enable_CDC_Source.sql`                  | Enables CDC on the source tables with `is_cdc_enabled = 1` in `etl.config` (in production: the DBA; SQL Server Agent must run) |
-| 3     | `Scripts/ETL/Audit/ETL_Batch.sql`, `ETL_Load_Audit.sql`, `ETL_Start_Batch.sql`, `ETL_Audit_Procedures.sql` | Create the run log (runs and steps) and its procedures |
-| 3b    | `Scripts/ETL/Profiling/ETL_Profile_Source.sql`           | Creates the profiling table and procedure             |
-| 4     | `Scripts/ETL/Error_Event/ETL_Rejected_Table.sql`, `ETL_Error_Event_Schema.sql` | Create the quarantine and the error event schema |
-| 5     | `Scripts/Bronze/Bronze_DDL.sql`                          | Creates the Bronze tables                             |
-| 6     | `Scripts/Silver/Silver_DDL.sql`                          | Creates the Silver tables and the sequences           |
-| 7     | `Scripts/Gold/Gold_DDL.sql`                              | Creates the fact table                                |
-| 8     | `Scripts/Bronze/Load_Bronze_CDC.sql`, `Scripts/Bronze/Load_Bronze.sql` | Create the CDC load and the Bronze load procedure (in this order) |
-| 9     | `Scripts/Silver/Coding/...`                              | Create the quality checks and the Silver loads        |
-| 10    | `Scripts/Gold/Load_Fact_Sales_Order.sql`                 | Creates the Gold fact load                            |
-| 11    | Run the pipeline (or the procedures, in the order of the diagram above) | Loads the data                       |
-| 12    | `Scripts/Gold/Load_Dim_Table.sql`, `Scripts/Gold/View_Dim_*.sql` | Create the Gold dimensions (the calendar needs the fact loaded) |
+| Prefix | Content |
+|---|---|
+| `DDL_` | Tables, views, sequences (the structure) |
+| `usp_` | One stored procedure per file, named as the procedure |
+
+The installation order is in [Installation Order](Docs/Installation_Order.md).
 
 ---
 
@@ -207,6 +199,7 @@ Run them in this order, on SQL Server with the `AdventureWorks2025` database ava
 
 | Document                                                       | What you find                                                              |
 |----------------------------------------------------------------|----------------------------------------------------------------------------|
+| [Installation Order](Docs/Installation_Order.md)               | The order in which to run the scripts on an empty database                 |
 | [Source System Analysis](Docs/Source_System_Analysis.md)   | The kick-off with the business and IT: ER diagram, business rules, load strategy, and the follow-up on Change Data Capture |
 | [Naming Conventions](Docs/Naming_Conventions.md)                 | Every naming and design rule used in the data warehouse                    |
 | [SSIS Pipeline](Docs/SSIS_Pipeline.md)                         | How the pipeline works, step by step                                       |

@@ -105,8 +105,9 @@ GROUP BY a.overall_quality_rating, a.out_of_bounds_flag;
 
 | Script | Content |
 |---|---|
-| `Scripts/ETL/Error_Event/ETL_Rejected_Table.sql` | The quarantine |
-| `Scripts/ETL/Error_Event/ETL_Error_Event_Schema.sql` | Dimensions, facts, `etl.usp_save_error_events`, `etl.vw_error_event_daily` |
-| `Scripts/Silver/Coding/Check_Bronze_Quality/*.sql` | The 15 quality checks |
-| `Scripts/Gold/Gold_DDL.sql` | `gold.dim_audit` and the fact with `audit_key` |
-| `Scripts/Gold/Load_Fact_Sales_Order.sql` | Computes the flags and attaches the audit row to every fact row |
+| `Scripts/ETL/Error_Event/DDL_ETL_Rejected.sql` | The quarantine |
+| `Scripts/ETL/Error_Event/DDL_ETL_Error_Event.sql` | Dimensions, facts, `etl.vw_error_event_daily` |
+| `Scripts/ETL/Error_Event/usp_save_error_events.sql` | `etl.usp_save_error_events` |
+| `Scripts/Silver/Data_Quality/*.sql` | The 15 quality checks |
+| `Scripts/Gold/DDL_Gold.sql` | `gold.dim_audit` and the fact with `audit_key` |
+| `Scripts/Gold/usp_load_gold_fact_sales_order.sql` | Computes the flags and attaches the audit row to every fact row |
